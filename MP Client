@@ -1,0 +1,73 @@
+import socket
+import threading
+
+class TicTacToeClient:
+    def __init__(self, host='127.0.0.1', port=5555):
+        self.client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.client.connect((host, port))
+        self.board = [' '] * 9
+        self.my_turn = False
+        
+    def display_board(self):
+        print("\n  0   1   2")
+        for i in range(0, 9, 3):
+            print(f"{i} {self.board[i]} | {self.board[i+1]} | {self.board[i+2]}")
+            if i < 6:
+                print("  ---------")
+    
+    def receive(self):
+        while True:
+            try:
+                message = self.client.recv(1024).decode()
+                
+                if message.startswith("BOARD:"):
+                    board_state = message[6:].split(',')
+                    self.board = board_state
+                    self.display_board()
+                    
+                elif message == "YOUR_TURN":
+                    self.my_turn = True
+                    print("\nYour turn! Enter position (0-8): ")
+                    
+                elif message == "WAIT":
+                    self.my_turn = False
+                    print("\nWaiting for opponent...")
+                    
+                elif message == "WAITING":
+                    print("Waiting for another player to join...")
+                    
+                elif message.startswith("GAME_OVER:"):
+                    result = message[10:]
+                    if result == "TIE":
+                        print("Game Over! It's a tie!")
+                    else:
+                        print(f"Game Over! {result} wins!")
+                    break
+                    
+                elif message.startswith("Welcome"):
+                    print(message)
+                    
+            except:
+                print("Connection lost!")
+                break
+    
+    def write(self):
+        while True:
+            if self.my_turn:
+                try:
+                    move = input()
+                    self.client.send(move.encode())
+                    self.my_turn = False
+                except:
+                    break
+    
+    def start(self):
+        receive_thread = threading.Thread(target=self.receive)
+        receive_thread.start()
+        
+        write_thread = threading.Thread(target=self.write)
+        write_thread.start()
+
+if __name__ == "__main__":
+    client = TicTacToeClient()
+    client.start()
