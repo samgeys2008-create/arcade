@@ -2,139 +2,99 @@ import pygame
 import socket
 import pickle
 import threading
+import sys
 
-class PongClient:
-    def __init__(self, server_ip='localhost', port=5555):
-        self.client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server_ip = server_ip
-        self.port = port
-        self.player_id = None
-        
-        pygame.init()
-        self.screen = pygame.display.set_mode((800, 600))
-        pygame.display.set_caption("Multiplayer Pong")
-        self.clock = pygame.time.Clock()
-        
-        self.player1_y = 250
-        self.player2_y = 250
-        self.ball_x = 400
-        self.ball_y = 300
-        
-        self.running = True
-        self.connected = False
-        
-    def connect_to_server(self):
+# Vraag IP
+if len(sys.argv) > 1:
+    ip = sys.argv[1]
+else:
+    ip = input("Server IP (Enter voor localhost): ") or "localhost"
+
+# Verbind met server
+client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+client.connect((ip, 5555))
+mijn_id = pickle.loads(client.recv(1024))['id']
+
+print(f"Verbonden als speler {mijn_id+1}!")
+if mijn_id == 0:
+    print("Jij bent LINKS - gebruik W en S")
+else:
+    print("Jij bent RECHTS - gebruik PIJLTJES")
+
+# Pygame setup
+pygame.init()
+scherm = pygame.display.set_mode((800, 600))
+pygame.display.set_caption(f"Pong - Speler {mijn_id+1}")
+klok = pygame.time.Clock()
+
+# Game variabelen
+p1_y = 250
+p2_y = 250
+bal_x = 400
+bal_y = 300
+bezig = True
+
+def ontvang_data():
+    global p1_y, p2_y, bal_x, bal_y
+    while bezig:
         try:
-            self.client.connect((self.server_ip, self.port))
-            data = self.client.recv(1024)
-            message = pickle.loads(data)
-            self.player_id = message['player_id']
-            self.connected = True
-            print(f"Verbonden als speler {self.player_id}")
-            
-            if self.player_id == 0:
-                print("Jij bent speler 1 (links) - Gebruik W en S")
-            else:
-                print("Jij bent speler 2 (rechts) - Gebruik PIJLTJES")
-            
-            receive_thread = threading.Thread(target=self.receive_data)
-            receive_thread.daemon = True
-            receive_thread.start()
-            
-        except Exception as e:
-            print(f"Kan niet verbinden met server: {e}")
-            self.running = False
-    
-    def receive_data(self):
-        while self.running:
-            try:
-                data = self.client.recv(1024)
-                if not data:
-                    break
-                    
-                game_state = pickle.loads(data)
-                self.player1_y = game_state['player1_y']
-                self.player2_y = game_state['player2_y']
-                self.ball_x = game_state['ball_x']
-                self.ball_y = game_state['ball_y']
-                
-            except:
-                break
-        
-        print("Verbinding met server verbroken")
-        self.connected = False
-        self.running = False
-    
-    def send_move(self, y_position):
-        try:
-            message = {
-                'type': 'move',
-                'y_position': y_position
-            }
-            self.client.send(pickle.dumps(message))
+            data = pickle.loads(client.recv(1024))
+            p1_y = data['p1']
+            p2_y = data['p2']
+            bal_x = data['bx']
+            bal_y = data['by']
         except:
-            pass
-    
-    def handle_input(self):
-        keys = pygame.key.get_pressed()
-        
-        if self.player_id == 0:
-            if keys[pygame.K_w]:
-                self.send_move(max(0, self.player1_y - 5))
-            if keys[pygame.K_s]:
-                self.send_move(min(500, self.player1_y + 5))
-        else:
-            if keys[pygame.K_UP]:
-                self.send_move(max(0, self.player2_y - 5))
-            if keys[pygame.K_DOWN]:
-                self.send_move(min(500, self.player2_y + 5))
-    
-    def draw(self):
-        self.screen.fill((0, 0, 0))
-        
-        pygame.draw.line(self.screen, (255, 255, 255), (400, 0), (400, 600), 2)
-        
-        pygame.draw.rect(self.screen, (255, 255, 255), (50, self.player1_y, 10, 100))
-        pygame.draw.rect(self.screen, (255, 255, 255), (740, self.player2_y, 10, 100))
-        
-        pygame.draw.circle(self.screen, (255, 255, 255), (int(self.ball_x), int(self.ball_y)), 10)
-        
-        font = pygame.font.Font(None, 36)
-        if self.player_id == 0:
-            text = font.render("Speler 1 (W/S)", True, (255, 255, 255))
-        else:
-            text = font.render("Speler 2 (Pijltjes)", True, (255, 255, 255))
-        self.screen.blit(text, (10, 10))
-        
-        if not self.connected:
-            wait_text = font.render("Wachten op verbinding...", True, (255, 255, 255))
-            self.screen.blit(wait_text, (250, 300))
-        
-        pygame.display.flip()
-    
-    def run(self):
-        self.connect_to_server()
-        
-        while self.running:
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    self.running = False
-                elif event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_ESCAPE:
-                        self.running = False
-            
-            if self.connected:
-                self.handle_input()
-            self.draw()
-            self.clock.tick(60)
-        
-        pygame.quit()
-        self.client.close()
+            break
 
-if __name__ == "__main__":
-    server_ip = input("Voer server IP in (Enter voor localhost): ").strip()
-    if not server_ip:
-        server_ip = 'localhost'
+# Start ontvangst thread
+thread = threading.Thread(target=ontvang_data)
+thread.daemon = True
+thread.start()
+
+# Game loop
+while bezig:
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            bezig = False
     
-    client = PongClient(server_ip)
-    client.run()
+    # Input verwerken
+    keys = pygame.key.get_pressed()
+    
+    if mijn_id == 0:  # Speler 1 (links)
+        if keys[pygame.K_w]:
+            client.send(pickle.dumps({'y': max(0, p1_y - 7)}))
+        if keys[pygame.K_s]:
+            client.send(pickle.dumps({'y': min(500, p1_y + 7)}))
+    else:  # Speler 2 (rechts)
+        if keys[pygame.K_UP]:
+            client.send(pickle.dumps({'y': max(0, p2_y - 7)}))
+        if keys[pygame.K_DOWN]:
+            client.send(pickle.dumps({'y': min(500, p2_y + 7)}))
+    
+    # Tekenen
+    scherm.fill((0, 0, 0))
+    
+    # Middenlijn
+    pygame.draw.line(scherm, (255, 255, 255), (400, 0), (400, 600), 2)
+    
+    # Paddles
+    pygame.draw.rect(scherm, (255, 255, 255), (50, p1_y, 10, 100))
+    pygame.draw.rect(scherm, (255, 255, 255), (740, p2_y, 10, 100))
+    
+    # Bal
+    pygame.draw.circle(scherm, (255, 255, 255), (int(bal_x), int(bal_y)), 10)
+    
+    # Tekst
+    font = pygame.font.Font(None, 36)
+    if mijn_id == 0:
+        tekst = font.render("Speler 1 (W/S)", True, (0, 255, 0))
+    else:
+        tekst = font.render("Speler 2 (Pijltjes)", True, (0, 255, 0))
+    scherm.blit(tekst, (10, 10))
+    
+    pygame.display.flip()
+    klok.tick(60)
+
+# Afsluiten
+pygame.quit()
+client.close()
