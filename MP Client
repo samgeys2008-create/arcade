@@ -1,73 +1,140 @@
+import pygame
 import socket
+import pickle
 import threading
 
-class TicTacToeClient:
-    def __init__(self, host='127.0.0.1', port=5555):
+class PongClient:
+    def __init__(self, server_ip='localhost', port=5555):
         self.client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.client.connect((host, port))
-        self.board = [' '] * 9
-        self.my_turn = False
+        self.server_ip = server_ip
+        self.port = port
+        self.player_id = None
         
-    def display_board(self):
-        print("\n  0   1   2")
-        for i in range(0, 9, 3):
-            print(f"{i} {self.board[i]} | {self.board[i+1]} | {self.board[i+2]}")
-            if i < 6:
-                print("  ---------")
+        pygame.init()
+        self.screen = pygame.display.set_mode((800, 600))
+        pygame.display.set_caption("Multiplayer Pong")
+        self.clock = pygame.time.Clock()
+        
+        self.player1_y = 250
+        self.player2_y = 250
+        self.ball_x = 400
+        self.ball_y = 300
+        
+        self.running = True
+        self.connected = False
+        
+    def connect_to_server(self):
+        try:
+            self.client.connect((self.server_ip, self.port))
+            data = self.client.recv(1024)
+            message = pickle.loads(data)
+            self.player_id = message['player_id']
+            self.connected = True
+            print(f"Verbonden als speler {self.player_id}")
+            
+            if self.player_id == 0:
+                print("Jij bent speler 1 (links) - Gebruik W en S")
+            else:
+                print("Jij bent speler 2 (rechts) - Gebruik PIJLTJES")
+            
+            receive_thread = threading.Thread(target=self.receive_data)
+            receive_thread.daemon = True
+            receive_thread.start()
+            
+        except Exception as e:
+            print(f"Kan niet verbinden met server: {e}")
+            self.running = False
     
-    def receive(self):
-        while True:
+    def receive_data(self):
+        while self.running:
             try:
-                message = self.client.recv(1024).decode()
+                data = self.client.recv(1024)
+                if not data:
+                    break
+                    
+                game_state = pickle.loads(data)
+                self.player1_y = game_state['player1_y']
+                self.player2_y = game_state['player2_y']
+                self.ball_x = game_state['ball_x']
+                self.ball_y = game_state['ball_y']
                 
-                if message.startswith("BOARD:"):
-                    board_state = message[6:].split(',')
-                    self.board = board_state
-                    self.display_board()
-                    
-                elif message == "YOUR_TURN":
-                    self.my_turn = True
-                    print("\nYour turn! Enter position (0-8): ")
-                    
-                elif message == "WAIT":
-                    self.my_turn = False
-                    print("\nWaiting for opponent...")
-                    
-                elif message == "WAITING":
-                    print("Waiting for another player to join...")
-                    
-                elif message.startswith("GAME_OVER:"):
-                    result = message[10:]
-                    if result == "TIE":
-                        print("Game Over! It's a tie!")
-                    else:
-                        print(f"Game Over! {result} wins!")
-                    break
-                    
-                elif message.startswith("Welcome"):
-                    print(message)
-                    
             except:
-                print("Connection lost!")
                 break
-    
-    def write(self):
-        while True:
-            if self.my_turn:
-                try:
-                    move = input()
-                    self.client.send(move.encode())
-                    self.my_turn = False
-                except:
-                    break
-    
-    def start(self):
-        receive_thread = threading.Thread(target=self.receive)
-        receive_thread.start()
         
-        write_thread = threading.Thread(target=self.write)
-        write_thread.start()
+        print("Verbinding met server verbroken")
+        self.connected = False
+        self.running = False
+    
+    def send_move(self, y_position):
+        try:
+            message = {
+                'type': 'move',
+                'y_position': y_position
+            }
+            self.client.send(pickle.dumps(message))
+        except:
+            pass
+    
+    def handle_input(self):
+        keys = pygame.key.get_pressed()
+        
+        if self.player_id == 0:
+            if keys[pygame.K_w]:
+                self.send_move(max(0, self.player1_y - 5))
+            if keys[pygame.K_s]:
+                self.send_move(min(500, self.player1_y + 5))
+        else:
+            if keys[pygame.K_UP]:
+                self.send_move(max(0, self.player2_y - 5))
+            if keys[pygame.K_DOWN]:
+                self.send_move(min(500, self.player2_y + 5))
+    
+    def draw(self):
+        self.screen.fill((0, 0, 0))
+        
+        pygame.draw.line(self.screen, (255, 255, 255), (400, 0), (400, 600), 2)
+        
+        pygame.draw.rect(self.screen, (255, 255, 255), (50, self.player1_y, 10, 100))
+        pygame.draw.rect(self.screen, (255, 255, 255), (740, self.player2_y, 10, 100))
+        
+        pygame.draw.circle(self.screen, (255, 255, 255), (int(self.ball_x), int(self.ball_y)), 10)
+        
+        font = pygame.font.Font(None, 36)
+        if self.player_id == 0:
+            text = font.render("Speler 1 (W/S)", True, (255, 255, 255))
+        else:
+            text = font.render("Speler 2 (Pijltjes)", True, (255, 255, 255))
+        self.screen.blit(text, (10, 10))
+        
+        if not self.connected:
+            wait_text = font.render("Wachten op verbinding...", True, (255, 255, 255))
+            self.screen.blit(wait_text, (250, 300))
+        
+        pygame.display.flip()
+    
+    def run(self):
+        self.connect_to_server()
+        
+        while self.running:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    self.running = False
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
+                        self.running = False
+            
+            if self.connected:
+                self.handle_input()
+            self.draw()
+            self.clock.tick(60)
+        
+        pygame.quit()
+        self.client.close()
 
 if __name__ == "__main__":
-    client = TicTacToeClient()
-    client.start()
+    server_ip = input("Voer server IP in (Enter voor localhost): ").strip()
+    if not server_ip:
+        server_ip = 'localhost'
+    
+    client = PongClient(server_ip)
+    client.run()
