@@ -1,4 +1,8 @@
 import pygame, sys, random, math, os
+import socket
+import threading
+import pickle
+import time
 
 pygame.init()
 pygame.joystick.init()
@@ -39,7 +43,7 @@ PINK = (255, 100, 180)
 GOLD = (255, 215, 0)
 SILVER = (192, 192, 192)
 DARK_RED = (150, 0, 0)
-DARK_GREEN = (0, 150, 0)
+DARK_GREEN_ALT = (0, 150, 0)
 
 # Pong game constants
 PADDLE_WIDTH = 20
@@ -47,6 +51,16 @@ PADDLE_HEIGHT = 120
 BALL_RADIUS = 15
 COURT_COLOR = (10, 20, 40)
 CENTER_LINE_COLOR = WHITE
+
+# Multiplayer Pong constants
+MP_WIDTH, MP_HEIGHT = W, H  # Gebruik volledig scherm
+MP_PADDLE_WIDTH = PADDLE_WIDTH
+MP_PADDLE_HEIGHT = PADDLE_HEIGHT
+MP_BALL_RADIUS = BALL_RADIUS
+MP_PADDLE_SPEED = 12
+MP_BALL_SPEED = 8
+MP_MAX_BALL_SPEED = 18
+MP_FPS = 60
 
 # ---- Background ----
 try:
@@ -99,6 +113,308 @@ pong_score_limit = 5
 # ---------- SPACE INVADERS DIFFICULTY ----------
 space_invaders_difficulty = 5
 
+# ---------- MULTIPLAYER MODE ----------
+mp_waiting_for_client = False
+mp_host_ready = False
+
+# ========== INPUT CONFIGURATION DICTIONARIES ==========
+# Menu Navigation (works in menus and selection screens)
+MENU_INPUT_CONFIG = {
+    # Button mappings (button_index: (dx, dy))
+    "buttons": {
+        0: (0, 1),   # Button0: DOWN
+        1: (-1, 0),  # Button1: LEFT
+        2: (0, -1),  # Button2: UP
+        3: (1, 0),   # Button3: RIGHT
+    },
+    # Axis mappings (axis values to direction)
+    "axis": {
+        "AXIS0_POSITIVE": (-1, 0),  # AXIS0 = 1: LEFT
+        "AXIS0_NEGATIVE": (1, 0),   # AXIS0 = -1: RIGHT
+        "AXIS1_POSITIVE": (0, -1),  # AXIS1 = 1: UP
+        "AXIS1_NEGATIVE": (0, 1),   # AXIS1 = -1: DOWN
+    },
+    # Special buttons
+    "back_button": 4,    # Button4: Back/Pause
+    "select_button": 5,  # Button5: Enter/Select
+    "axis_deadzone": 0.2
+}
+
+# Snake Game Controls
+SNAKE_INPUT_CONFIG = {
+    # Button mappings (button_index: (dx, dy))
+    "buttons": {
+        0: (0, 1),   # Button0: DOWN
+        1: (-1, 0),  # Button1: LEFT
+        2: (0, -1),  # Button2: UP
+        3: (1, 0),   # Button3: RIGHT
+    },
+    # Axis mappings (axis values to direction)
+    "axis": {
+        "AXIS0_POSITIVE": (-1, 0),  # AXIS0 = 1: LEFT
+        "AXIS0_NEGATIVE": (1, 0),   # AXIS0 = -1: RIGHT
+        "AXIS1_POSITIVE": (0, -1),  # AXIS1 = 1: UP
+        "AXIS1_NEGATIVE": (0, 1),   # AXIS1 = -1: DOWN
+    },
+    # Special buttons
+    "pause_button": 4,   # Button4: Pause
+    "select_button": 5,  # Button5: Select in menus
+    "axis_deadzone": 0.2
+}
+
+# Pong Game Controls (2 players)
+PONG_INPUT_CONFIG = {
+    # Player 1 controls (left paddle)
+    "player1": {
+        "buttons": {
+            0: 1,   # Button0: DOWN (positive movement)
+            2: -1,  # Button2: UP (negative movement)
+        },
+        "axis": {
+            "AXIS1": True,  # Use AXIS1 for movement
+        }
+    },
+    # Player 2 controls (right paddle)
+    "player2": {
+        "buttons": {
+            0: 1,   # Button0: DOWN (positive movement)
+            2: -1,  # Button2: UP (negative movement)
+        },
+        "axis": {
+            "AXIS1": True,  # Use AXIS1 for movement
+        }
+    },
+    "axis_deadzone": 0.2
+}
+
+# Space Invaders Controls
+SPACE_INVADERS_INPUT_CONFIG = {
+    # Button mappings
+    "buttons": {
+        0: "shoot",     # Button0: SHOOT
+        1: "left",      # Button1: LEFT
+        2: "shoot",     # Button2: SHOOT (alternative)
+        3: "right",     # Button3: RIGHT
+    },
+    # Axis mappings
+    "axis": {
+        "AXIS0_POSITIVE": "left",   # AXIS0 = 1: LEFT
+        "AXIS0_NEGATIVE": "right",  # AXIS0 = -1: RIGHT
+        "AXIS1_POSITIVE": None,     # AXIS1 = 1: unused
+        "AXIS1_NEGATIVE": None,     # AXIS1 = -1: unused
+    },
+    # Special buttons
+    "pause_button": 4,   # Button4: Pause
+    "select_button": 5,  # Button5: Select in menus
+    "axis_deadzone": 0.2
+}
+
+# ========== INPUT HANDLING SYSTEM ==========
+class InputHandler:
+    def __init__(self, config):
+        self.config = config
+        self.last_horiz = [0, 0]
+        self.last_vert = [0, 0]
+        self.select_last = [False, False]
+        self.button_last = [[False, False, False, False, False, False] for _ in range(2)]
+        self.back_last = [False, False]
+        self.axis0_raw = [0, 0]
+        self.axis1_raw = [0, 0]
+        self.button_held = [[False, False, False, False, False, False] for _ in range(2)]
+        
+    def deadzone(self, x):
+        return 0 if abs(x) < self.config.get("axis_deadzone", 0.2) else x
+    
+    def get_menu_input(self, players):
+        """Get input for menu navigation (returns edges for movement)"""
+        horiz_edge = 0
+        vert_edge = 0
+        select_pressed = False
+        back_pressed = False
+        button_dir = (0, 0)
+        
+        for p in players:
+            if p < len(joysticks):
+                j = joysticks[p]
+                
+                # Get axis values with deadzone
+                h = self.deadzone(j.get_axis(0))
+                v = self.deadzone(j.get_axis(1))
+                
+                # Edge detection for menu navigation
+                if h > 0.5 and self.last_horiz[p] <= 0.5:
+                    horiz_edge = self.config["axis"]["AXIS0_POSITIVE"][0]
+                elif h < -0.5 and self.last_horiz[p] >= -0.5:
+                    horiz_edge = self.config["axis"]["AXIS0_NEGATIVE"][0]
+                
+                if v > 0.5 and self.last_vert[p] <= 0.5:
+                    vert_edge = self.config["axis"]["AXIS1_POSITIVE"][1]
+                elif v < -0.5 and self.last_vert[p] >= -0.5:
+                    vert_edge = self.config["axis"]["AXIS1_NEGATIVE"][1]
+                
+                self.last_horiz[p] = h
+                self.last_vert[p] = v
+                
+                # Button edges for menu navigation
+                for btn, direction in self.config["buttons"].items():
+                    if btn < j.get_numbuttons():
+                        pressed = j.get_button(btn)
+                        if pressed and not self.button_last[p][btn]:
+                            button_dir = direction
+                        self.button_last[p][btn] = pressed
+                
+                # Special buttons
+                back_btn = self.config["back_button"]
+                if back_btn < j.get_numbuttons():
+                    back = j.get_button(back_btn)
+                    if back and not self.back_last[p]:
+                        back_pressed = True
+                    self.back_last[p] = back
+                
+                select_btn = self.config["select_button"]
+                if select_btn < j.get_numbuttons():
+                    sel = j.get_button(select_btn)
+                    if sel and not self.select_last[p]:
+                        select_pressed = True
+                    self.select_last[p] = sel
+        
+        # Buttons take priority over axis for menu navigation
+        dx, dy = button_dir
+        if dx == 0 and dy == 0:
+            dx = horiz_edge
+            dy = vert_edge
+            
+        return (dx, dy), select_pressed, back_pressed
+    
+    def get_snake_input(self, player):
+        """Get continuous input for Snake game"""
+        if player >= len(joysticks):
+            return (0, 0), False, False, False
+        
+        j = joysticks[player]
+        
+        # Get axis values
+        axis0 = self.deadzone(j.get_axis(0))
+        axis1 = self.deadzone(j.get_axis(1))
+        
+        # Check button held states
+        num_buttons = min(6, j.get_numbuttons())
+        for btn in range(num_buttons):
+            self.button_held[player][btn] = j.get_button(btn)
+        
+        # Determine direction from buttons (priority)
+        dx, dy = 0, 0
+        if self.button_held[player][1]:  # LEFT
+            dx = -1
+        elif self.button_held[player][3]:  # RIGHT
+            dx = 1
+        elif self.button_held[player][0]:  # DOWN
+            dy = 1
+        elif self.button_held[player][2]:  # UP
+            dy = -1
+        # Then check axis
+        elif axis0 > 0.5:
+            dx = self.config["axis"]["AXIS0_POSITIVE"][0]
+        elif axis0 < -0.5:
+            dx = self.config["axis"]["AXIS0_NEGATIVE"][0]
+        elif axis1 > 0.5:
+            dy = self.config["axis"]["AXIS1_POSITIVE"][1]
+        elif axis1 < -0.5:
+            dy = self.config["axis"]["AXIS1_NEGATIVE"][1]
+        
+        # Check special buttons
+        pause = False
+        select = False
+        back = False
+        
+        pause_btn = self.config["pause_button"]
+        if pause_btn < j.get_numbuttons():
+            pause = j.get_button(pause_btn)
+        
+        select_btn = self.config["select_button"]
+        if select_btn < j.get_numbuttons():
+            select = j.get_button(select_btn)
+        
+        # Also check back button for menu navigation in death screen
+        back_btn = MENU_INPUT_CONFIG["back_button"]
+        if back_btn < j.get_numbuttons():
+            back = j.get_button(back_btn)
+        
+        return (dx, dy), pause, select, back
+    
+    def get_pong_input(self, controller_num):
+        """Get continuous input for Pong (returns movement value -1, 0, 1)"""
+        if controller_num >= len(joysticks):
+            return 0
+        
+        j = joysticks[controller_num]
+        
+        # Determine which player config to use based on which controller is being polled
+        if controller_num == 0:
+            config = self.config["player1"]
+        else:
+            config = self.config["player2"]
+        
+        # Check axis
+        axis1 = self.deadzone(j.get_axis(1))
+        move = 0
+        
+        if abs(axis1) > self.config["axis_deadzone"]:
+            # AXIS1 positive = UP, negative = DOWN
+            if axis1 > 0:
+                move = -1  # UP
+            else:
+                move = 1   # DOWN
+        
+        # Check buttons (override axis)
+        for btn, value in config["buttons"].items():
+            if btn < j.get_numbuttons() and j.get_button(btn):
+                move = value
+        
+        return move
+    
+    def get_space_invaders_input(self, player):
+        """Get input for Space Invaders"""
+        if player >= len(joysticks):
+            return "none", False, False, False
+        
+        j = joysticks[player]
+        
+        # Get axis values
+        axis0 = self.deadzone(j.get_axis(0))
+        
+        # Check button states
+        action = "none"
+        for btn in range(min(4, j.get_numbuttons())):
+            if j.get_button(btn):
+                action = self.config["buttons"].get(btn, "none")
+        
+        # Check axis if no button pressed
+        if action == "none":
+            if axis0 > 0.5:
+                action = self.config["axis"]["AXIS0_POSITIVE"]
+            elif axis0 < -0.5:
+                action = self.config["axis"]["AXIS0_NEGATIVE"]
+        
+        # Special buttons
+        shoot = False
+        pause = False
+        select_btn = self.config["select_button"]
+        if select_btn < j.get_numbuttons():
+            shoot = j.get_button(select_btn)
+        
+        pause_btn = self.config["pause_button"]
+        if pause_btn < j.get_numbuttons():
+            pause = j.get_button(pause_btn)
+        
+        return action, shoot, pause, False
+
+# Create input handlers for each game mode
+menu_input = InputHandler(MENU_INPUT_CONFIG)
+snake_input = InputHandler(SNAKE_INPUT_CONFIG)
+pong_input = InputHandler(PONG_INPUT_CONFIG)
+space_invaders_input = InputHandler(SPACE_INVADERS_INPUT_CONFIG)
+
 # ---------- DRAW FUNCTIONS ----------
 def draw_text(text, font, pos, color):
     surf = font.render(text, True, color)
@@ -117,14 +433,15 @@ def draw_slider(surface, x, y, width, value, min_val, max_val, steps):
     """Draw a slider with tick marks"""
     pygame.draw.rect(surface, GRAY, (x, y-5, width, 10), border_radius=5)
     
-    min_int = int(min_val)
-    max_int = int(max_val)
-    
-    for i in range(min_int, max_int + 1):
-        tick_x = x + (i - min_int) / (max_int - min_int) * width
-        pygame.draw.line(surface, WHITE, (tick_x, y-10), (tick_x, y+10), 2)
-        val_text = small_font.render(f"{i}", True, WHITE)
-        surface.blit(val_text, (tick_x - val_text.get_width()//2, y+15))
+    if isinstance(min_val, int) and isinstance(max_val, int):
+        min_int = int(min_val)
+        max_int = int(max_val)
+        
+        for i in range(min_int, max_int + 1):
+            tick_x = x + (i - min_int) / (max_int - min_int) * width
+            pygame.draw.line(surface, WHITE, (tick_x, y-10), (tick_x, y+10), 2)
+            val_text = small_font.render(f"{i}", True, WHITE)
+            surface.blit(val_text, (tick_x - val_text.get_width()//2, y+15))
     
     handle_x = x + (value - min_val) / (max_val - min_val) * width
     pygame.draw.circle(surface, YELLOW, (int(handle_x), y), 15)
@@ -245,6 +562,34 @@ def draw_space_invaders_preview(surface, rect):
     pygame.draw.rect(surface, YELLOW, (rect.centerx - 2, rect.centery, 4, 10))
     pygame.draw.rect(surface, RED, (rect.centerx - 20, rect.centery - 20, 4, 10))
 
+def draw_mp_pong_preview(surface, rect):
+    """Draw a multiplayer Pong preview"""
+    pygame.draw.rect(surface, (20, 20, 50), rect, border_radius=20)
+    pygame.draw.rect(surface, GOLD, rect, 3, border_radius=20)
+    
+    # Draw network icon
+    font = pygame.font.Font(None, 30)
+    wifi_text = font.render("🌐", True, GOLD)
+    surface.blit(wifi_text, (rect.centerx - 15, rect.y + 10))
+    
+    # Draw two connected screens
+    pygame.draw.line(surface, GOLD, (rect.x + 20, rect.centery - 10), (rect.right - 20, rect.centery - 10), 2)
+    
+    left_screen = pygame.Rect(rect.x + 30, rect.centery - 20, 60, 40)
+    right_screen = pygame.Rect(rect.right - 90, rect.centery - 20, 60, 40)
+    pygame.draw.rect(surface, BLUE, left_screen, 2)
+    pygame.draw.rect(surface, RED, right_screen, 2)
+    
+    # Draw simple paddles
+    pygame.draw.rect(surface, WHITE, (rect.x + 35, rect.centery - 15, 5, 30))
+    pygame.draw.rect(surface, WHITE, (rect.right - 40, rect.centery - 15, 5, 30))
+    
+    # Draw ball
+    pygame.draw.circle(surface, YELLOW, (rect.centerx, rect.centery), 5)
+    
+    text = small_font.render("2 PLAYERS NEEDED", True, GOLD)
+    surface.blit(text, (rect.centerx - text.get_width()//2, rect.bottom - 30))
+
 # ---------- STARS ----------
 class ShootingStar:
     def __init__(self):
@@ -316,16 +661,17 @@ two_player_games = [
     }
 ]
 
-# ---------- INPUT STATE ----------
-last_horiz = [0, 0]
-last_vert  = [0, 0]
-select_last = [False, False]
-button_last = [[False, False, False, False] for _ in range(2)]
-back_last = [False, False]
-pause_last = [False, False]
-
-def deadzone(x, t=0.2):
-    return 0 if abs(x) < t else x
+# ---------- GAME SELECT (MP) ----------
+mp_games = [
+    {
+        "name": "MP PONG",
+        "rect": pygame.Rect(game_x0, game_y, game_width, game_height),
+        "color": GOLD,
+        "description": "Online Pong - 2 Players Needed",
+        "highscore_label": "ONLINE",
+        "preview_func": draw_mp_pong_preview
+    }
+]
 
 # ---- HIGHSCORE ----
 HS_FILE = "highscore.txt"
@@ -337,14 +683,9 @@ except:
 game_highscores = {
     "SNAKE": highscore,
     "PONG": 0,
-    "SPACE INVADERS": 0
+    "SPACE INVADERS": 0,
+    "MP PONG": 0
 }
-
-# ---------- CONTROLLER BUTTON MAPPING ----------
-btn_map = [
-    {0: (0,1), 1:(-1,0), 2:(0,-1), 3:(1,0)},
-    {0: (0,1), 1:(1,0), 2:(0,-1), 3:(-1,0)}
-]
 
 # ---------- SNAKE GAME FUNCTIONS ----------
 def init_snake_game():
@@ -389,7 +730,7 @@ def init_snake_game():
                 
                 segment_rect = pygame.Rect(seg_x, seg_y, cell, cell)
                 
-                pygame.draw.rect(surface, DARK_GREEN, 
+                pygame.draw.rect(surface, DARK_GREEN_ALT, 
                                (seg_x+3, seg_y+3, cell, cell), border_radius=8)
                 
                 if i == 0:
@@ -444,7 +785,7 @@ def init_snake_game():
                 (apple_x + cell//2 - 3, apple_y - 8),
                 (apple_x + cell//2 + 3, apple_y - 8)
             ]
-            pygame.draw.polygon(surface, DARK_GREEN, stem_points)
+            pygame.draw.polygon(surface, DARK_GREEN_ALT, stem_points)
     
     def new_game():
         s = Snake()
@@ -461,7 +802,8 @@ def init_snake_game():
     paused = False
     pause_select_pressed = False
     
-    pause_panel = pygame.Rect(W//2-300, H//2-200, 600, 400)
+    # FIXED: Made pause panel larger and more user-friendly
+    pause_panel = pygame.Rect(W//2-350, H//2-250, 700, 500)
     speed_slider_rect = pygame.Rect(W//2-250, H//2, 500, 40)
     
     death_panel = pygame.Rect(W//2-250, H//2-220, 500, 440)
@@ -633,6 +975,9 @@ def init_pong_game(win_score=5):
     restart_btn = pygame.Rect(W//2-150, H//2+60, 300, 60)
     quit_btn    = pygame.Rect(W//2-150, H//2+140, 300, 60)
     menu_index = 0
+    dead_select_pressed = False
+    paused = False
+    pause_select_pressed = False
     
     return {
         'paddles': paddles,
@@ -653,7 +998,9 @@ def init_pong_game(win_score=5):
         'restart_btn': restart_btn,
         'quit_btn': quit_btn,
         'menu_index': menu_index,
-        'dead_select_pressed': False,
+        'dead_select_pressed': dead_select_pressed,
+        'paused': paused,
+        'pause_select_pressed': pause_select_pressed,
         'Paddle': Paddle,
         'Ball': Ball
     }
@@ -793,6 +1140,8 @@ def init_space_invaders_game(difficulty=5):
             self.enemy_shoot_chance = difficulty * 3
             self.max_enemy_bullets = difficulty
             self.dead_menu_index = 0
+            self.dead_select_pressed = False
+            self.pause_select_pressed = False
             self.create_enemies()
             
         def create_enemies(self):
@@ -883,57 +1232,27 @@ def init_space_invaders_game(difficulty=5):
                 if self.player.score > game_highscores["SPACE INVADERS"]:
                     game_highscores["SPACE INVADERS"] = self.player.score
                 
-        def handle_input(self, joystick, button_dir, button_states, shoot_pressed, select_pressed, back_pressed):
-            if back_pressed and not self.game_over and not self.victory:
+        def handle_input(self, action, shoot_pressed, pause_pressed, back_pressed):
+            # Handle pause
+            if pause_pressed and not self.game_over and not self.victory:
                 self.paused = not self.paused
+                self.pause_select_pressed = True
                 return
                 
             if self.game_over or self.victory:
-                if joystick:
-                    v = deadzone(joystick.get_axis(1))
-                    if v > 0.5:
-                        self.dead_menu_index = 0
-                    elif v < -0.5:
-                        self.dead_menu_index = 1
-                        
-                if button_dir != (0, 0):
-                    dx, dy = button_dir
-                    
-                    if dy == 1:
-                        self.dead_menu_index = 1
-                    elif dy == -1:
-                        self.dead_menu_index = 0
-                        
-                if select_pressed:
-                    if self.dead_menu_index == 0:
-                        return "restart"
-                    else:
-                        return "menu"
                 return
                 
             if self.paused:
                 return
                 
-            if joystick:
-                # FIXED: Natural axis movement for Space Invaders (no inversion)
-                h = deadzone(joystick.get_axis(0))
-                
-                if h > 0.2:
-                    self.player.move_right_pressed = False
-                    self.player.move_left_pressed = True
-                elif h < -0.2:
-                    self.player.move_left_pressed = False
-                    self.player.move_right_pressed = True
-                else:
-                    self.player.move_left_pressed = False
-                    self.player.move_right_pressed = False
-            
-            if button_states[1]:
-                self.player.move_left()
-            if button_states[3]:
-                self.player.move_right()
-                
-            if not (button_states[1] or button_states[3]) and not (joystick and abs(deadzone(joystick.get_axis(0))) > 0.2):
+            # Handle movement based on action
+            if action == "left":
+                self.player.move_left_pressed = True
+                self.player.move_right_pressed = False
+            elif action == "right":
+                self.player.move_left_pressed = False
+                self.player.move_right_pressed = True
+            else:
                 self.player.move_left_pressed = False
                 self.player.move_right_pressed = False
                 
@@ -941,6 +1260,31 @@ def init_space_invaders_game(difficulty=5):
                 bullet = self.player.shoot()
                 if bullet:
                     self.bullets.append(bullet)
+        
+        def handle_dead_screen_input(self, dy, select_pressed):
+            if self.game_over or self.victory:
+                if dy == 1:
+                    self.dead_menu_index = 1
+                elif dy == -1:
+                    self.dead_menu_index = 0
+                
+                if select_pressed and not self.dead_select_pressed:
+                    self.dead_select_pressed = True
+                    return True  # Selection made
+                elif not select_pressed:
+                    self.dead_select_pressed = False
+            return False
+        
+        def handle_pause_input(self, dx, select_pressed):
+            if self.paused:
+                # In pause menu, you could add options here
+                if select_pressed and not self.pause_select_pressed:
+                    self.pause_select_pressed = True
+                    self.paused = False  # Resume game
+                    return True
+                elif not select_pressed:
+                    self.pause_select_pressed = False
+            return False
                     
         def draw(self, surface):
             surface.fill(BLACK)
@@ -986,9 +1330,21 @@ def init_space_invaders_game(difficulty=5):
             overlay.fill(BLACK)
             surface.blit(overlay, (0, 0))
             
+            panel_width = 600
+            panel_height = 350
+            panel_x = W//2 - panel_width//2
+            panel_y = H//2 - panel_height//2
+            
+            pygame.draw.rect(surface, (40, 40, 60), (panel_x, panel_y, panel_width, panel_height), border_radius=20)
+            pygame.draw.rect(surface, YELLOW, (panel_x, panel_y, panel_width, panel_height), 4, border_radius=20)
+            
             pause_text = title_font.render("PAUSED", True, YELLOW)
-            pause_rect = pause_text.get_rect(center=(W//2, H//2))
+            pause_rect = pause_text.get_rect(center=(W//2, panel_y + 100))
             surface.blit(pause_text, pause_rect)
+            
+            resume_text = btn_font.render("PRESS SELECT TO RESUME", True, WHITE)
+            resume_rect = resume_text.get_rect(center=(W//2, panel_y + 200))
+            surface.blit(resume_text, resume_rect)
                 
         def draw_dead_screen(self, surface):
             overlay = pygame.Surface((W, H))
@@ -1022,7 +1378,7 @@ def init_space_invaders_game(difficulty=5):
             restart_y = panel_y + 260
             quit_y = panel_y + 330
             
-            restart_color = DARK_GREEN if self.dead_menu_index == 0 else (50, 50, 50)
+            restart_color = DARK_GREEN_ALT if self.dead_menu_index == 0 else (50, 50, 50)
             pygame.draw.rect(surface, restart_color, (button_x, restart_y, button_width, button_height), border_radius=15)
             pygame.draw.rect(surface, GREEN if self.dead_menu_index == 0 else GRAY, 
                             (button_x, restart_y, button_width, button_height), 3, border_radius=15)
@@ -1049,7 +1405,7 @@ def init_space_invaders_game(difficulty=5):
             panel_x = W//2 - panel_width//2
             panel_y = H//2 - panel_height//2
             
-            pygame.draw.rect(surface, DARK_GREEN, (panel_x, panel_y, panel_width, panel_height), border_radius=20)
+            pygame.draw.rect(surface, DARK_GREEN_ALT, (panel_x, panel_y, panel_width, panel_height), border_radius=20)
             pygame.draw.rect(surface, GREEN, (panel_x, panel_y, panel_width, panel_height), 4, border_radius=20)
             
             victory_text = title_font.render("VICTORY!", True, WHITE)
@@ -1070,7 +1426,7 @@ def init_space_invaders_game(difficulty=5):
             restart_y = panel_y + 260
             quit_y = panel_y + 330
             
-            restart_color = DARK_GREEN if self.dead_menu_index == 0 else (50, 50, 50)
+            restart_color = DARK_GREEN_ALT if self.dead_menu_index == 0 else (50, 50, 50)
             pygame.draw.rect(surface, restart_color, (button_x, restart_y, button_width, button_height), border_radius=15)
             pygame.draw.rect(surface, GREEN if self.dead_menu_index == 0 else GRAY, 
                             (button_x, restart_y, button_width, button_height), 3, border_radius=15)
@@ -1092,6 +1448,814 @@ def init_space_invaders_game(difficulty=5):
         'difficulty': difficulty
     }
 
+# ---------- MULTIPLAYER PONG CLASSES ----------
+class MultiplayerPongHost:
+    def __init__(self, win_score=5):
+        self.screen = pygame.display.set_mode((W, H), pygame.FULLSCREEN)
+        pygame.display.set_caption("Pong - HOST (Blauwe Paddle)")
+        self.clock = pygame.time.Clock()
+        self.font = pygame.font.Font(None, 36)
+        self.small_font = pygame.font.Font(None, 24)
+        self.win_score = win_score
+        
+        # Game objecten - Zelfde als 2P Pong
+        self.court_margin = 40
+        self.court_width = W - self.court_margin * 2
+        self.court_height = H - self.court_margin * 2
+        self.court_x = self.court_margin
+        self.court_y = self.court_margin
+        
+        # Paddles
+        paddle_gap = 50
+        paddle1_x = self.court_x + paddle_gap
+        paddle2_x = self.court_x + self.court_width - paddle_gap - MP_PADDLE_WIDTH
+        paddle_y = self.court_y + (self.court_height - MP_PADDLE_HEIGHT) // 2
+        
+        self.paddle1 = pygame.Rect(paddle1_x, paddle_y, MP_PADDLE_WIDTH, MP_PADDLE_HEIGHT)
+        self.paddle2 = pygame.Rect(paddle2_x, paddle_y, MP_PADDLE_WIDTH, MP_PADDLE_HEIGHT)
+        
+        # Ball
+        self.ball_x = self.court_x + self.court_width // 2
+        self.ball_y = self.court_y + self.court_height // 2
+        self.reset_ball()
+        
+        self.score1 = 0
+        self.score2 = 0
+        
+        # Netwerk setup
+        self.server = MPServerHandler()
+        self.server.start()
+        
+        self.client_connected = False
+        self.game_started = False  # Nieuw: spel start pas als client verbonden is
+        self.running = True
+        self.last_send_time = 0
+        self.send_interval = 1.0 / 30
+        self.game_over = False
+        self.winner = None
+        self.paused = False
+        
+    def reset_ball(self):
+        """Reset bal naar midden met willekeurige richting"""
+        self.ball_x = self.court_x + self.court_width // 2
+        self.ball_y = self.court_y + self.court_height // 2
+        angle = random.uniform(-45, 45) * (math.pi / 180)
+        direction = 1 if random.random() < 0.5 else -1
+        self.ball_speed_x = direction * math.cos(angle) * MP_BALL_SPEED
+        self.ball_speed_y = math.sin(angle) * MP_BALL_SPEED
+        
+    def handle_input(self):
+        """Verwerk input voor host paddle (blauw)"""
+        keys = pygame.key.get_pressed()
+        
+        if keys[pygame.K_w] and self.paddle1.top > self.court_y:
+            self.paddle1.y -= MP_PADDLE_SPEED
+        if keys[pygame.K_s] and self.paddle1.bottom < self.court_y + self.court_height:
+            self.paddle1.y += MP_PADDLE_SPEED
+        
+        # Pause met ESC
+        if keys[pygame.K_ESCAPE]:
+            self.paused = not self.paused
+            time.sleep(0.2)  # Debounce
+                
+    def update_ball(self):
+        """Update bal positie en check collisions - Zelfde als 2P Pong"""
+        self.ball_x += self.ball_speed_x
+        self.ball_y += self.ball_speed_y
+        
+        # Botsing met boven/onder
+        if self.ball_y - MP_BALL_RADIUS < self.court_y or self.ball_y + MP_BALL_RADIUS > self.court_y + self.court_height:
+            self.ball_speed_y *= -1
+            self.ball_speed_y += random.uniform(-0.5, 0.5)
+        
+        # Bal rect voor collision detection
+        ball_rect = pygame.Rect(self.ball_x - MP_BALL_RADIUS, self.ball_y - MP_BALL_RADIUS, 
+                              MP_BALL_RADIUS * 2, MP_BALL_RADIUS * 2)
+        
+        # Botsing met paddle1 (host)
+        if ball_rect.colliderect(self.paddle1) and self.ball_speed_x < 0:
+            relative_y = (self.ball_y - self.paddle1.centery) / (MP_PADDLE_HEIGHT / 2)
+            bounce_angle = relative_y * (math.pi / 4)
+            
+            self.ball_speed_x = -self.ball_speed_x * 1.1
+            self.ball_speed_y = math.sin(bounce_angle) * abs(self.ball_speed_x)
+            
+            # Snelheid limieten
+            speed = math.sqrt(self.ball_speed_x**2 + self.ball_speed_y**2)
+            if speed < MP_BALL_SPEED:
+                factor = MP_BALL_SPEED / speed
+                self.ball_speed_x *= factor
+                self.ball_speed_y *= factor
+            if speed > MP_MAX_BALL_SPEED:
+                factor = MP_MAX_BALL_SPEED / speed
+                self.ball_speed_x *= factor
+                self.ball_speed_y *= factor
+            
+            if self.ball_speed_x > 0:
+                self.ball_x = self.paddle1.right + MP_BALL_RADIUS
+        
+        # Botsing met paddle2 (client) - wordt alleen lokaal berekend voor physics
+        if ball_rect.colliderect(self.paddle2) and self.ball_speed_x > 0:
+            relative_y = (self.ball_y - self.paddle2.centery) / (MP_PADDLE_HEIGHT / 2)
+            bounce_angle = relative_y * (math.pi / 4)
+            
+            self.ball_speed_x = -self.ball_speed_x * 1.1
+            self.ball_speed_y = math.sin(bounce_angle) * abs(self.ball_speed_x)
+            
+            speed = math.sqrt(self.ball_speed_x**2 + self.ball_speed_y**2)
+            if speed < MP_BALL_SPEED:
+                factor = MP_BALL_SPEED / speed
+                self.ball_speed_x *= factor
+                self.ball_speed_y *= factor
+            if speed > MP_MAX_BALL_SPEED:
+                factor = MP_MAX_BALL_SPEED / speed
+                self.ball_speed_x *= factor
+                self.ball_speed_y *= factor
+            
+            if self.ball_speed_x < 0:
+                self.ball_x = self.paddle2.left - MP_BALL_RADIUS
+        
+        # Scoren
+        if self.ball_x - MP_BALL_RADIUS < self.court_x:
+            self.score2 += 1
+            self.reset_ball()
+            if self.score2 >= self.win_score:
+                self.game_over = True
+                self.winner = 2
+        elif self.ball_x + MP_BALL_RADIUS > self.court_x + self.court_width:
+            self.score1 += 1
+            self.reset_ball()
+            if self.score1 >= self.win_score:
+                self.game_over = True
+                self.winner = 1
+        
+    def draw(self):
+        """Teken het spel - Zelfde als 2P Pong"""
+        self.screen.fill(COURT_COLOR)
+        
+        # Court border
+        pygame.draw.rect(self.screen, (100, 100, 150), 
+                        (self.court_x - 5, self.court_y - 5, self.court_width + 10, self.court_height + 10), 
+                        5, border_radius=15)
+        pygame.draw.rect(self.screen, (50, 50, 100), 
+                        (self.court_x, self.court_y, self.court_width, self.court_height), 
+                        border_radius=10)
+        
+        # Center line
+        dash_length = 20
+        gap_length = 15
+        for y in range(self.court_y, self.court_y + self.court_height, dash_length + gap_length):
+            pygame.draw.line(self.screen, CENTER_LINE_COLOR, 
+                            (self.court_x + self.court_width // 2, y), 
+                            (self.court_x + self.court_width // 2, min(y + dash_length, self.court_y + self.court_height)), 
+                            3)
+        
+        # Center circle
+        pygame.draw.circle(self.screen, CENTER_LINE_COLOR, 
+                          (self.court_x + self.court_width // 2, self.court_y + self.court_height // 2), 60, 3)
+        
+        # Paddles
+        # Paddle1 (host) - Blauw
+        pygame.draw.rect(self.screen, (BLUE[0]//2, BLUE[1]//2, BLUE[2]//2), 
+                        (self.paddle1.x + 3, self.paddle1.y + 3, self.paddle1.width, self.paddle1.height),
+                        border_radius=10)
+        pygame.draw.rect(self.screen, BLUE, self.paddle1, border_radius=10)
+        
+        # Paddle2 (client) - Rood
+        pygame.draw.rect(self.screen, (RED[0]//2, RED[1]//2, RED[2]//2), 
+                        (self.paddle2.x + 3, self.paddle2.y + 3, self.paddle2.width, self.paddle2.height),
+                        border_radius=10)
+        pygame.draw.rect(self.screen, RED, self.paddle2, border_radius=10)
+        
+        # Ball
+        pygame.draw.circle(self.screen, (YELLOW[0]//2, YELLOW[1]//2, YELLOW[2]//2),
+                         (int(self.ball_x) + 3, int(self.ball_y) + 3), MP_BALL_RADIUS)
+        pygame.draw.circle(self.screen, YELLOW, (int(self.ball_x), int(self.ball_y)), MP_BALL_RADIUS)
+        pygame.draw.circle(self.screen, (255, 255, 255, 150), 
+                         (int(self.ball_x) - 5, int(self.ball_y) - 5), MP_BALL_RADIUS // 3)
+        
+        # Score
+        score_y = 30
+        p1_score_bg = pygame.Rect(W//4 - 60, score_y - 25, 120, 80)
+        pygame.draw.rect(self.screen, (0, 0, 50, 200), p1_score_bg, border_radius=15)
+        pygame.draw.rect(self.screen, BLUE, p1_score_bg, 3, border_radius=15)
+        p1_score_text = title_font.render(str(self.score1), True, BLUE)
+        self.screen.blit(p1_score_text, (W//4 - p1_score_text.get_width()//2, score_y - 25))
+        p1_label = score_font.render("HOST", True, LIGHT_BLUE)
+        self.screen.blit(p1_label, (W//4 - p1_label.get_width()//2, score_y + 50))
+        
+        colon = title_font.render(":", True, YELLOW)
+        self.screen.blit(colon, (W//2 - colon.get_width()//2, score_y))
+        
+        p2_score_bg = pygame.Rect(3*W//4 - 60, score_y - 25, 120, 80)
+        pygame.draw.rect(self.screen, (50, 0, 0, 200), p2_score_bg, border_radius=15)
+        pygame.draw.rect(self.screen, RED, p2_score_bg, 3, border_radius=15)
+        p2_score_text = title_font.render(str(self.score2), True, RED)
+        self.screen.blit(p2_score_text, (3*W//4 - p2_score_text.get_width()//2, score_y - 25))
+        p2_label = score_font.render("CLIENT", True, (255, 150, 150))
+        self.screen.blit(p2_label, (3*W//4 - p2_label.get_width()//2, score_y + 50))
+        
+        win_score_text = small_font.render(f"FIRST TO {self.win_score} WINS", True, YELLOW)
+        self.screen.blit(win_score_text, (W//2 - win_score_text.get_width()//2, score_y + 90))
+        
+        # Status - Wachten op client
+        if not self.client_connected:
+            overlay = pygame.Surface((W, H))
+            overlay.set_alpha(180)
+            overlay.fill(BLACK)
+            self.screen.blit(overlay, (0, 0))
+            
+            title = title_font.render("WACHTEN OP SPELER 2", True, YELLOW)
+            title_rect = title.get_rect(center=(W//2, H//2 - 60))
+            self.screen.blit(title, title_rect)
+            
+            ip_text = self.font.render(f"IP: {self.get_ip()}", True, CYAN)
+            ip_rect = ip_text.get_rect(center=(W//2, H//2))
+            self.screen.blit(ip_text, ip_rect)
+            
+            port_text = self.small_font.render("Poort: 5555", True, WHITE)
+            port_rect = port_text.get_rect(center=(W//2, H//2 + 40))
+            self.screen.blit(port_text, port_rect)
+            
+            dots = "." * (int(time.time() * 2) % 4)
+            wait_text = self.small_font.render(f"Verbinding zoeken{dots}", True, GRAY)
+            wait_rect = wait_text.get_rect(center=(W//2, H//2 + 80))
+            self.screen.blit(wait_text, wait_rect)
+            
+            inst_text = self.small_font.render("Start dezelfde game op de andere speler", True, GRAY)
+            inst_rect = inst_text.get_rect(center=(W//2, H//2 + 120))
+            self.screen.blit(inst_text, inst_rect)
+        
+        # Wachten tot spel kan beginnen
+        elif not self.game_started:
+            overlay = pygame.Surface((W, H))
+            overlay.set_alpha(180)
+            overlay.fill(BLACK)
+            self.screen.blit(overlay, (0, 0))
+            
+            ready_text = title_font.render("SPELER 2 GEVONDEN!", True, GREEN)
+            ready_rect = ready_text.get_rect(center=(W//2, H//2 - 40))
+            self.screen.blit(ready_text, ready_rect)
+            
+            start_text = self.font.render("Spel begint over 3 seconden...", True, YELLOW)
+            start_rect = start_text.get_rect(center=(W//2, H//2 + 20))
+            self.screen.blit(start_text, start_rect)
+        
+        # Game over scherm
+        if self.game_over:
+            overlay = pygame.Surface((W, H))
+            overlay.set_alpha(180)
+            overlay.fill(BLACK)
+            self.screen.blit(overlay, (0, 0))
+            
+            winner_text = self.font.render(f"SPELER {self.winner} WINT!", True, YELLOW)
+            winner_rect = winner_text.get_rect(center=(W//2, H//2 - 40))
+            self.screen.blit(winner_text, winner_rect)
+            
+            restart_text = self.small_font.render("Druk SPATIE om opnieuw te spelen of ESC om te stoppen", True, WHITE)
+            restart_rect = restart_text.get_rect(center=(W//2, H//2 + 20))
+            self.screen.blit(restart_text, restart_rect)
+        
+        # Pause scherm
+        if self.paused and not self.game_over and self.game_started:
+            overlay = pygame.Surface((W, H))
+            overlay.set_alpha(180)
+            overlay.fill(BLACK)
+            self.screen.blit(overlay, (0, 0))
+            
+            pause_text = self.font.render("PAUZE", True, YELLOW)
+            pause_rect = pause_text.get_rect(center=(W//2, H//2))
+            self.screen.blit(pause_text, pause_rect)
+        
+        pygame.display.flip()
+        
+    def get_ip(self):
+        """Vind het lokale IP-adres"""
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            s.close()
+            return ip
+        except:
+            return "127.0.0.1"
+        
+    def send_game_state(self):
+        """Stuur game state naar client"""
+        current_time = time.time()
+        if current_time - self.last_send_time >= self.send_interval and self.game_started:
+            state = {
+                'ball_x': self.ball_x,
+                'ball_y': self.ball_y,
+                'ball_speed_x': self.ball_speed_x,
+                'ball_speed_y': self.ball_speed_y,
+                'paddle1_y': self.paddle1.y,
+                'score1': self.score1,
+                'score2': self.score2,
+                'game_over': self.game_over,
+                'winner': self.winner,
+                'court_x': self.court_x,
+                'court_y': self.court_y,
+                'court_width': self.court_width,
+                'court_height': self.court_height,
+                'game_started': self.game_started,
+                'timestamp': current_time
+            }
+            self.server.send_state(state)
+            self.last_send_time = current_time
+        
+    def receive_client_data(self):
+        """Ontvang paddle positie van client"""
+        client_paddle = self.server.get_client_paddle()
+        if client_paddle is not None:
+            # Update paddle2 positie van client
+            self.paddle2.y = client_paddle
+            if not self.client_connected:
+                self.client_connected = True
+                print("Client verbonden!")
+                # Geef client de win_score door
+                self.server.send_win_score(self.win_score)
+    
+    def check_game_start(self):
+        """Check of spel kan starten"""
+        if self.client_connected and not self.game_started:
+            # Wacht 3 seconden voordat spel begint
+            if not hasattr(self, 'start_timer'):
+                self.start_timer = time.time() + 3
+            elif time.time() >= self.start_timer:
+                self.game_started = True
+                print("Spel start!")
+            
+    def run(self):
+        """Main game loop"""
+        print("=" * 50)
+        print("PONG - HOST MODE")
+        print("=" * 50)
+        print(f"Jouw IP: {self.get_ip()}")
+        print("Wachten op client...")
+        
+        while self.running:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    self.running = False
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
+                        if self.game_over:
+                            self.running = False
+                        else:
+                            self.paused = not self.paused
+                    elif event.key == pygame.K_SPACE and self.game_over:
+                        # Reset game
+                        self.score1 = 0
+                        self.score2 = 0
+                        self.game_over = False
+                        self.winner = None
+                        self.reset_ball()
+            
+            # Check of spel kan starten
+            self.check_game_start()
+            
+            # Alleen game update als spel gestart is
+            if self.game_started and not self.game_over and not self.paused:
+                self.handle_input()
+                self.update_ball()
+            
+            # Ontvang client data (altijd)
+            self.receive_client_data()
+            
+            # Stuur naar client (alleen als spel gestart is)
+            if self.client_connected:
+                self.send_game_state()
+                
+            self.draw()
+            self.clock.tick(MP_FPS)
+            
+        self.server.stop()
+        return
+
+class MultiplayerPongClient:
+    def __init__(self):
+        self.screen = pygame.display.set_mode((W, H), pygame.FULLSCREEN)
+        pygame.display.set_caption("Pong - CLIENT (Rode Paddle)")
+        self.clock = pygame.time.Clock()
+        self.font = pygame.font.Font(None, 36)
+        self.small_font = pygame.font.Font(None, 24)
+        
+        # Game objecten (worden geupdate van host)
+        self.paddle2 = pygame.Rect(0, 0, MP_PADDLE_WIDTH, MP_PADDLE_HEIGHT)
+        self.ball_x = 0
+        self.ball_y = 0
+        self.score1 = 0
+        self.score2 = 0
+        self.game_over = False
+        self.winner = None
+        self.court_x = 40
+        self.court_y = 40
+        self.court_width = W - 80
+        self.court_height = H - 80
+        self.paused = False
+        self.win_score = 5  # Default, wordt overschreven door host
+        
+        # Netwerk setup
+        self.client = MPClientHandler()
+        self.client.start()
+        
+        self.connected = False
+        self.game_started = False
+        self.running = True
+        self.last_send_time = 0
+        self.send_interval = 1.0 / 30
+        
+    def handle_input(self):
+        """Verwerk input voor client paddle (rood)"""
+        keys = pygame.key.get_pressed()
+        
+        if keys[pygame.K_UP] and self.paddle2.top > self.court_y:
+            self.paddle2.y -= MP_PADDLE_SPEED
+        if keys[pygame.K_DOWN] and self.paddle2.bottom < self.court_y + self.court_height:
+            self.paddle2.y += MP_PADDLE_SPEED
+        
+        # Pause met ESC
+        if keys[pygame.K_ESCAPE]:
+            self.paused = not self.paused
+            time.sleep(0.2)
+            
+    def draw(self):
+        """Teken het spel - Zelfde als Host"""
+        self.screen.fill(COURT_COLOR)
+        
+        # Court border
+        pygame.draw.rect(self.screen, (100, 100, 150), 
+                        (self.court_x - 5, self.court_y - 5, self.court_width + 10, self.court_height + 10), 
+                        5, border_radius=15)
+        pygame.draw.rect(self.screen, (50, 50, 100), 
+                        (self.court_x, self.court_y, self.court_width, self.court_height), 
+                        border_radius=10)
+        
+        # Center line
+        dash_length = 20
+        gap_length = 15
+        for y in range(self.court_y, self.court_y + self.court_height, dash_length + gap_length):
+            pygame.draw.line(self.screen, CENTER_LINE_COLOR, 
+                            (self.court_x + self.court_width // 2, y), 
+                            (self.court_x + self.court_width // 2, min(y + dash_length, self.court_y + self.court_height)), 
+                            3)
+        
+        # Center circle
+        pygame.draw.circle(self.screen, CENTER_LINE_COLOR, 
+                          (self.court_x + self.court_width // 2, self.court_y + self.court_height // 2), 60, 3)
+        
+        # Paddle1 (host) - Alleen voor weergave
+        if hasattr(self, 'paddle1_y'):
+            paddle1 = pygame.Rect(self.court_x + 50, self.paddle1_y, MP_PADDLE_WIDTH, MP_PADDLE_HEIGHT)
+            pygame.draw.rect(self.screen, (BLUE[0]//2, BLUE[1]//2, BLUE[2]//2), 
+                            (paddle1.x + 3, paddle1.y + 3, paddle1.width, paddle1.height),
+                            border_radius=10)
+            pygame.draw.rect(self.screen, BLUE, paddle1, border_radius=10)
+        
+        # Paddle2 (client) - Rood
+        pygame.draw.rect(self.screen, (RED[0]//2, RED[1]//2, RED[2]//2), 
+                        (self.paddle2.x + 3, self.paddle2.y + 3, self.paddle2.width, self.paddle2.height),
+                        border_radius=10)
+        pygame.draw.rect(self.screen, RED, self.paddle2, border_radius=10)
+        
+        # Ball
+        if self.ball_x and self.ball_y:
+            pygame.draw.circle(self.screen, (YELLOW[0]//2, YELLOW[1]//2, YELLOW[2]//2),
+                             (int(self.ball_x) + 3, int(self.ball_y) + 3), MP_BALL_RADIUS)
+            pygame.draw.circle(self.screen, YELLOW, (int(self.ball_x), int(self.ball_y)), MP_BALL_RADIUS)
+            pygame.draw.circle(self.screen, (255, 255, 255, 150), 
+                             (int(self.ball_x) - 5, int(self.ball_y) - 5), MP_BALL_RADIUS // 3)
+        
+        # Score
+        score_y = 30
+        p1_score_bg = pygame.Rect(W//4 - 60, score_y - 25, 120, 80)
+        pygame.draw.rect(self.screen, (0, 0, 50, 200), p1_score_bg, border_radius=15)
+        pygame.draw.rect(self.screen, BLUE, p1_score_bg, 3, border_radius=15)
+        p1_score_text = title_font.render(str(self.score1), True, BLUE)
+        self.screen.blit(p1_score_text, (W//4 - p1_score_text.get_width()//2, score_y - 25))
+        p1_label = score_font.render("HOST", True, LIGHT_BLUE)
+        self.screen.blit(p1_label, (W//4 - p1_label.get_width()//2, score_y + 50))
+        
+        colon = title_font.render(":", True, YELLOW)
+        self.screen.blit(colon, (W//2 - colon.get_width()//2, score_y))
+        
+        p2_score_bg = pygame.Rect(3*W//4 - 60, score_y - 25, 120, 80)
+        pygame.draw.rect(self.screen, (50, 0, 0, 200), p2_score_bg, border_radius=15)
+        pygame.draw.rect(self.screen, RED, p2_score_bg, 3, border_radius=15)
+        p2_score_text = title_font.render(str(self.score2), True, RED)
+        self.screen.blit(p2_score_text, (3*W//4 - p2_score_text.get_width()//2, score_y - 25))
+        p2_label = score_font.render("JIJ", True, (255, 150, 150))
+        self.screen.blit(p2_label, (3*W//4 - p2_label.get_width()//2, score_y + 50))
+        
+        win_score_text = small_font.render(f"FIRST TO {self.win_score} WINS", True, YELLOW)
+        self.screen.blit(win_score_text, (W//2 - win_score_text.get_width()//2, score_y + 90))
+        
+        # Verbindingsstatus
+        if not self.connected:
+            overlay = pygame.Surface((W, H))
+            overlay.set_alpha(180)
+            overlay.fill(BLACK)
+            self.screen.blit(overlay, (0, 0))
+            
+            title = title_font.render("ZOEKEN NAAR SPELER 1...", True, YELLOW)
+            title_rect = title.get_rect(center=(W//2, H//2 - 40))
+            self.screen.blit(title, title_rect)
+            
+            dots = "." * (int(time.time() * 2) % 4)
+            wait_text = self.font.render(f"Verbinden{dots}", True, CYAN)
+            wait_rect = wait_text.get_rect(center=(W//2, H//2 + 20))
+            self.screen.blit(wait_text, wait_rect)
+        
+        # Wachten tot spel begint
+        elif not self.game_started:
+            overlay = pygame.Surface((W, H))
+            overlay.set_alpha(180)
+            overlay.fill(BLACK)
+            self.screen.blit(overlay, (0, 0))
+            
+            ready_text = title_font.render("VERBONDEN MET HOST!", True, GREEN)
+            ready_rect = ready_text.get_rect(center=(W//2, H//2 - 40))
+            self.screen.blit(ready_text, ready_rect)
+            
+            start_text = self.font.render("Spel begint...", True, YELLOW)
+            start_rect = start_text.get_rect(center=(W//2, H//2 + 20))
+            self.screen.blit(start_text, start_rect)
+        
+        # Game over scherm
+        if self.game_over:
+            overlay = pygame.Surface((W, H))
+            overlay.set_alpha(180)
+            overlay.fill(BLACK)
+            self.screen.blit(overlay, (0, 0))
+            
+            winner_text = self.font.render(f"SPELER {self.winner} WINT!", True, YELLOW)
+            winner_rect = winner_text.get_rect(center=(W//2, H//2 - 40))
+            self.screen.blit(winner_text, winner_rect)
+            
+            wait_text = self.small_font.render("Wachten op host om opnieuw te starten...", True, WHITE)
+            wait_rect = wait_text.get_rect(center=(W//2, H//2 + 20))
+            self.screen.blit(wait_text, wait_rect)
+        
+        # Pause scherm
+        if self.paused and not self.game_over and self.game_started:
+            overlay = pygame.Surface((W, H))
+            overlay.set_alpha(180)
+            overlay.fill(BLACK)
+            self.screen.blit(overlay, (0, 0))
+            
+            pause_text = self.font.render("PAUZE", True, YELLOW)
+            pause_rect = pause_text.get_rect(center=(W//2, H//2))
+            self.screen.blit(pause_text, pause_rect)
+        
+        pygame.display.flip()
+        
+    def send_paddle_position(self):
+        """Stuur paddle positie naar host"""
+        current_time = time.time()
+        if current_time - self.last_send_time >= self.send_interval and self.game_started:
+            self.client.send_paddle_position(self.paddle2.y)
+            self.last_send_time = current_time
+        
+    def receive_game_state(self):
+        """Ontvang game state van host"""
+        state = self.client.get_game_state()
+        if state:
+            if not self.connected:
+                self.connected = True
+                print("Verbonden met host!")
+            
+            # Update game state
+            self.ball_x = state.get('ball_x', self.ball_x)
+            self.ball_y = state.get('ball_y', self.ball_y)
+            self.score1 = state.get('score1', self.score1)
+            self.score2 = state.get('score2', self.score2)
+            self.game_over = state.get('game_over', False)
+            self.winner = state.get('winner', self.winner)
+            self.court_x = state.get('court_x', self.court_x)
+            self.court_y = state.get('court_y', self.court_y)
+            self.court_width = state.get('court_width', self.court_width)
+            self.court_height = state.get('court_height', self.court_height)
+            self.game_started = state.get('game_started', False)
+            
+            # Update win_score als die wordt doorgestuurd
+            if 'win_score' in state:
+                self.win_score = state['win_score']
+            
+            # Bewaar paddle1 positie voor weergave
+            self.paddle1_y = state.get('paddle1_y', self.court_y + self.court_height//2 - MP_PADDLE_HEIGHT//2)
+            
+    def run(self):
+        """Main game loop"""
+        print("=" * 50)
+        print("PONG - CLIENT MODE")
+        print("=" * 50)
+        print("Zoeken naar host...")
+        
+        while self.running:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    self.running = False
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
+                        self.running = False
+            
+            # Alleen input als spel gestart is
+            if self.game_started and not self.game_over and not self.paused:
+                self.handle_input()
+            
+            self.send_paddle_position()
+            self.receive_game_state()
+            
+            self.draw()
+            self.clock.tick(MP_FPS)
+            
+        self.client.stop()
+        return
+
+class MPServerHandler:
+    def __init__(self):
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.connection = None
+        self.client_paddle = None
+        self.running = False
+        self.port = 5555
+        self.lock = threading.Lock()
+        self.win_score = 5
+        
+    def start(self):
+        """Start de server"""
+        self.running = True
+        self.thread = threading.Thread(target=self._server_loop)
+        self.thread.daemon = True
+        self.thread.start()
+        
+    def _server_loop(self):
+        try:
+            self.socket.bind(('0.0.0.0', self.port))
+            self.socket.listen(1)
+            print(f"Server luistert op poort {self.port}")
+            
+            self.connection, address = self.socket.accept()
+            print(f"Client verbonden vanaf: {address}")
+            
+            # Stuur win_score naar client
+            welcome_msg = pickle.dumps({'connected': True, 'win_score': self.win_score})
+            self.connection.send(welcome_msg)
+            
+            while self.running:
+                try:
+                    data = self.connection.recv(4096)
+                    if data:
+                        received = pickle.loads(data)
+                        if 'paddle2_y' in received:
+                            with self.lock:
+                                self.client_paddle = received['paddle2_y']
+                except Exception as e:
+                    print(f"Fout bij ontvangen van client: {e}")
+                    break
+        except Exception as e:
+            print(f"Server fout: {e}")
+            
+    def send_state(self, state):
+        """Stuur state naar client"""
+        try:
+            if self.connection:
+                data = pickle.dumps(state)
+                self.connection.send(data)
+        except Exception as e:
+            print(f"Fout bij verzenden naar client: {e}")
+            
+    def send_win_score(self, win_score):
+        """Stuur win_score naar client"""
+        self.win_score = win_score
+        try:
+            if self.connection:
+                data = pickle.dumps({'win_score': win_score})
+                self.connection.send(data)
+        except Exception as e:
+            print(f"Fout bij verzenden win_score: {e}")
+            
+    def get_client_paddle(self):
+        """Haal laatste paddle positie van client op"""
+        with self.lock:
+            paddle = self.client_paddle
+            self.client_paddle = None
+            return paddle
+        
+    def stop(self):
+        """Stop server"""
+        self.running = False
+        if self.connection:
+            self.connection.close()
+        self.socket.close()
+
+class MPClientHandler:
+    def __init__(self):
+        self.socket = None
+        self.game_state = None
+        self.running = False
+        self.lock = threading.Lock()
+        self.connected = False
+        self.server_ip = None
+        
+    def start(self):
+        """Start de client - zoekt automatisch naar host"""
+        self.running = True
+        self.thread = threading.Thread(target=self._client_loop)
+        self.thread.daemon = True
+        self.thread.start()
+        
+    def _client_loop(self):
+        # Probeer automatisch host te vinden op het lokale netwerk
+        # Eerst proberen we localhost (voor testen)
+        # Daarna proberen we 192.168.1.x range
+        base_ips = [
+            "127.0.0.1",  # localhost voor testen
+            "192.168.1.",  # Meest voorkomende thuisnetwerk
+            "192.168.0.",  # Alternatief
+            "10.0.0.",     # Zakelijk netwerk
+        ]
+        
+        port = 5555
+        
+        while self.running and not self.connected:
+            for base in base_ips:
+                if base.endswith('.'):
+                    # Probeer alle IP's in range 1-254
+                    for i in range(1, 255):
+                        if not self.running:
+                            break
+                        ip = f"{base}{i}"
+                        try:
+                            print(f"Proberen te verbinden met {ip}:{port}...")
+                            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                            self.socket.settimeout(0.5)  # Timeout van 0.5 seconde per poging
+                            self.socket.connect((ip, port))
+                            print(f"Verbonden met host op {ip}:{port}")
+                            self.connected = True
+                            self.server_ip = ip
+                            break
+                        except:
+                            self.socket = None
+                            continue
+                else:
+                    # Probeer enkel IP
+                    try:
+                        print(f"Proberen te verbinden met {base}:{port}...")
+                        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        self.socket.settimeout(0.5)
+                        self.socket.connect((base, port))
+                        print(f"Verbonden met host op {base}:{port}")
+                        self.connected = True
+                        self.server_ip = base
+                        break
+                    except:
+                        self.socket = None
+                        continue
+                
+                if self.connected:
+                    break
+            
+            if not self.connected:
+                time.sleep(1)  # Wacht 1 seconde voor volgende scan
+            
+        if self.connected:
+            # Ontvang data van server
+            while self.running:
+                try:
+                    data = self.socket.recv(4096)
+                    if data:
+                        received = pickle.loads(data)
+                        with self.lock:
+                            self.game_state = received
+                except Exception as e:
+                    print(f"Fout bij ontvangen van server: {e}")
+                    break
+        
+    def send_paddle_position(self, paddle_y):
+        """Stuur paddle positie naar server"""
+        try:
+            if self.socket and self.connected:
+                data = pickle.dumps({'paddle2_y': paddle_y})
+                self.socket.send(data)
+        except Exception as e:
+            print(f"Fout bij verzenden naar server: {e}")
+            
+    def get_game_state(self):
+        """Haal laatste game state op"""
+        with self.lock:
+            state = self.game_state
+            self.game_state = None
+            return state
+        
+    def stop(self):
+        """Stop client"""
+        self.running = False
+        if self.socket:
+            self.socket.close()
+
 def restore_original_screen():
     global screen, W, H
     screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
@@ -1101,84 +2265,100 @@ def restore_original_screen():
 snake_game_state = None
 pong_game_state = None
 space_invaders_game_state = None
+mp_pong_game = None
+
+# Pause state tracking to prevent glitches
+last_pause_state = [False, False]  # For each player
+pause_cooldown = [0, 0]  # Cooldown for each player
 
 while True:
     for e in pygame.event.get():
         if e.type == pygame.QUIT:
-            pygame.quit(); sys.exit()
+            pygame.quit()
+            sys.exit()
 
-    horiz = 0
-    vert = 0
-    btn_select_edge = False
-    button_dir = (0, 0)
-    back_pressed_edge = False
-    pause_pressed_edge = False
-    button_states = [False, False, False, False]
-
-    if state == "menu":
+    # Get input based on current state
+    if state == "menu" or state == "choose" or state == "game_select" or \
+       state == "pong_score_select" or state == "space_invaders_difficulty_select" or \
+       state == "mp_mode_select":
+        # Menu states - both players can control
         players = range(min(2, len(joysticks)))
-    elif state == "pong_score_select":
-        players = range(min(2, len(joysticks)))
-    elif state == "space_invaders_difficulty_select":
-        players = range(min(2, len(joysticks)))
-    elif state == "game_pong" and pong_game_state is not None and pong_game_state['game_over']:
-        players = range(min(2, len(joysticks)))
+        direction, select_pressed, back_pressed = menu_input.get_menu_input(players)
+        dx, dy = direction
+    elif state == "game_1":
+        # Snake game - single player
+        if active_joystick is None and len(joysticks) > 0:
+            active_joystick = 0
+        if active_joystick is not None:
+            direction, pause_pressed, select_pressed, back_pressed = snake_input.get_snake_input(active_joystick)
+            dx, dy = direction
+    elif state == "game_space_invaders":
+        # Space Invaders - single player
+        if active_joystick is None and len(joysticks) > 0:
+            active_joystick = 0
+        if active_joystick is not None:
+            action, shoot_pressed, pause_pressed, _ = space_invaders_input.get_space_invaders_input(active_joystick)
+            select_pressed = shoot_pressed
+            back_pressed = pause_pressed
+            
+            # Check if game is in dead/victory state and handle menu input
+            if space_invaders_game_state and (space_invaders_game_state['game'].game_over or space_invaders_game_state['game'].victory):
+                direction, menu_select, _ = menu_input.get_menu_input([active_joystick])
+                _, dy_menu = direction
+                selection_made = space_invaders_game_state['game'].handle_dead_screen_input(dy_menu, menu_select)
+                
+                if selection_made:
+                    if space_invaders_game_state['game'].dead_menu_index == 0:  # RESTART
+                        space_invaders_game_state = init_space_invaders_game(space_invaders_difficulty)
+                        screen = space_invaders_game_state['game_screen']
+                    else:  # QUIT
+                        restore_original_screen()
+                        state = "game_select"
+            
+            # Handle pause input for Space Invaders
+            if space_invaders_game_state and pause_pressed and not last_pause_state[active_joystick] and pause_cooldown[active_joystick] <= 0:
+                space_invaders_game_state['game'].paused = not space_invaders_game_state['game'].paused
+                pause_cooldown[active_joystick] = 15
+    elif state == "game_pong":
+        # Pong game - two players - Handle pause input
+        if pong_game_state:
+            # Check for pause from either controller
+            for p in range(min(2, len(joysticks))):
+                j = joysticks[p]
+                pause_btn = MENU_INPUT_CONFIG["back_button"]
+                if pause_btn < j.get_numbuttons():
+                    pause_pressed = j.get_button(pause_btn)
+                    
+                    if pause_pressed and not last_pause_state[p] and pause_cooldown[p] <= 0 and not pong_game_state['game_over']:
+                        pong_game_state['paused'] = not pong_game_state['paused']
+                        pause_cooldown[p] = 15
+                    last_pause_state[p] = pause_pressed
+    elif state == "game_mp_pong":
+        # Multiplayer Pong - handled separately
+        pass
     else:
-        players = [active_joystick] if active_joystick is not None else range(min(2, len(joysticks)))
+        players = range(min(2, len(joysticks)))
+        direction, select_pressed, back_pressed = menu_input.get_menu_input(players)
+        dx, dy = direction
 
-    for p in players:
-        if p < len(joysticks):
-            j = joysticks[p]
-            
-            h = deadzone(j.get_axis(0))
-            v = deadzone(j.get_axis(1))
-            
-            # FIXED: Only invert for Player 1 when NOT in Space Invaders game mode
-            if p == 0 and state != "game_space_invaders":
-                h = -h
-                v = -v
-            
-            if h > 0.5 and last_horiz[p] <= 0.5: horiz = 1
-            elif h < -0.5 and last_horiz[p] >= -0.5: horiz = -1
-            last_horiz[p] = h
-            
-            if v > 0.5 and last_vert[p] <= 0.5: vert = 1
-            elif v < -0.5 and last_vert[p] >= -0.5: vert = -1
-            last_vert[p] = v
-
-            for btn in range(4):
-                pressed = j.get_button(btn)
-                button_states[btn] = pressed
-                if pressed and not button_last[p][btn]:
-                    dx, dy = btn_map[p][btn]
-                    button_dir = (dx, dy)
-                button_last[p][btn] = pressed
-
-            back_pressed = j.get_button(4)
-            if back_pressed and not back_last[p]:
-                back_pressed_edge = True
-            back_last[p] = back_pressed
-
-            pause_pressed = j.get_button(4)
-            if pause_pressed and not pause_last[p]:
-                pause_pressed_edge = True
-            pause_last[p] = pause_pressed
-
-            sel = j.get_button(5)
-            if sel and not select_last[p]: 
-                btn_select_edge = True
-            select_last[p] = sel
+    # Update pause cooldowns
+    for i in range(2):
+        if pause_cooldown[i] > 0:
+            pause_cooldown[i] -= 1
 
     # ---------- STATE LOGIC ----------
     if state == "menu":
-        if horiz: menu_selected = max(0, min(2, menu_selected + horiz))
+        if dx == 1:
+            menu_selected = min(2, menu_selected + 1)
+        elif dx == -1:
+            menu_selected = max(0, menu_selected - 1)
         
-        if button_dir != (0, 0):
-            dx, dy = button_dir
-            if dx != 0:
-                menu_selected = max(0, min(2, menu_selected + dx))
+        if dy == 1:
+            menu_selected = 1
+        elif dy == -1:
+            menu_selected = 1
             
-        if btn_select_edge:
+        if select_pressed:
             if menu_selected == 0: 
                 state = "choose"
                 is_two_player_mode = False
@@ -1187,42 +2367,40 @@ while True:
                 active_joystick = None
                 is_two_player_mode = True
             elif menu_selected == 2: 
-                state = "choose"
+                state = "mp_mode_select"
                 is_two_player_mode = False
 
     elif state == "choose":
-        if horiz == 1 and choose_selected == 0: choose_selected = 1
-        elif horiz == -1 and choose_selected == 1: choose_selected = 0
-        if vert == 1: choose_selected = 1
-        elif vert == -1: choose_selected = 0
+        if dx == 1:
+            choose_selected = 1
+        elif dx == -1:
+            choose_selected = 0
+        if dy == 1:
+            choose_selected = 1
+        elif dy == -1:
+            choose_selected = 0
         
-        if button_dir != (0, 0):
-            dx, dy = button_dir
-            if dx == 1 or dy == 1:
-                choose_selected = 1
-            elif dx == -1 or dy == -1:
-                choose_selected = 0
-        
-        if btn_select_edge:
+        if select_pressed:
             active_joystick = 1 if choose_selected == 0 else 0
             state = "game_select"
             if is_two_player_mode:
                 active_joystick = None
         
-        if back_pressed_edge:
+        if back_pressed:
             state = "menu"
 
     elif state == "game_select":
-        current_games = two_player_games if is_two_player_mode else one_player_games
+        if is_two_player_mode:
+            current_games = two_player_games
+        else:
+            current_games = one_player_games
         
-        if horiz: game_selected = max(0, min(len(current_games)-1, game_selected + horiz))
-        
-        if button_dir != (0, 0):
-            dx, dy = button_dir
-            if dx != 0:
-                game_selected = max(0, min(len(current_games)-1, game_selected + dx))
+        if dx == 1:
+            game_selected = min(len(current_games)-1, game_selected + 1)
+        elif dx == -1:
+            game_selected = max(0, game_selected - 1)
             
-        if btn_select_edge:
+        if select_pressed:
             selected_game = current_games[game_selected]["name"]
             
             if active_joystick is not None:
@@ -1237,48 +2415,53 @@ while True:
                 state = "pong_score_select"
                 pong_score_limit = 5
         
-        if back_pressed_edge:
+        if back_pressed:
             if is_two_player_mode:
                 state = "menu"
             else:
                 state = "choose"
 
+    elif state == "mp_mode_select":
+        current_games = mp_games
+        
+        if dx == 1 or dx == -1:
+            # Only one game in MP mode
+            pass
+            
+        if select_pressed:
+            selected_game = current_games[0]["name"]
+            if selected_game == "MP PONG":
+                state = "pong_score_select"  # Ga naar score selectie voor host
+        
+        if back_pressed:
+            state = "menu"
+
     elif state == "pong_score_select":
-        if horiz: 
-            pong_score_limit = max(5, min(20, pong_score_limit + horiz))
+        if dx == 1:
+            pong_score_limit = min(20, pong_score_limit + 1)
+        elif dx == -1:
+            pong_score_limit = max(5, pong_score_limit - 1)
         
-        if button_dir != (0, 0):
-            dx, dy = button_dir
-            if dx == 1:
-                pong_score_limit = max(5, min(20, pong_score_limit + 1))
-            elif dx == -1:
-                pong_score_limit = max(5, min(20, pong_score_limit - 1))
+        if select_pressed:
+            # Start als host
+            state = "game_mp_pong"
+            mp_pong_game = MultiplayerPongHost(pong_score_limit)
         
-        if btn_select_edge:
-            state = "game_pong"
-            pong_game_state = init_pong_game(pong_score_limit)
-            screen = pong_game_state['game_screen']
-        
-        if back_pressed_edge:
-            state = "game_select"
+        if back_pressed:
+            state = "mp_mode_select"
 
     elif state == "space_invaders_difficulty_select":
-        if horiz: 
-            space_invaders_difficulty = max(1, min(10, space_invaders_difficulty + horiz))
+        if dx == 1:
+            space_invaders_difficulty = min(10, space_invaders_difficulty + 1)
+        elif dx == -1:
+            space_invaders_difficulty = max(1, space_invaders_difficulty - 1)
         
-        if button_dir != (0, 0):
-            dx, dy = button_dir
-            if dx == 1:
-                space_invaders_difficulty = min(10, space_invaders_difficulty + 1)
-            elif dx == -1:
-                space_invaders_difficulty = max(1, space_invaders_difficulty - 1)
-        
-        if btn_select_edge:
+        if select_pressed:
             state = "game_space_invaders"
             space_invaders_game_state = init_space_invaders_game(space_invaders_difficulty)
             screen = space_invaders_game_state['game_screen']
         
-        if back_pressed_edge:
+        if back_pressed:
             state = "game_select"
 
     # ---------- DRAW ----------
@@ -1379,14 +2562,57 @@ while True:
                 name_text = btn_font.render(game["name"], True, (game["color"][0]//2, game["color"][1]//2, game["color"][2]//2))
                 screen.blit(name_text, (rect.centerx - name_text.get_width()//2, rect.y - 40))
 
+    elif state == "mp_mode_select":
+        screen.fill((10, 5, 30))
+        
+        draw_3d_text("MULTIPLAYER", title_font, (W//2, 150))
+        
+        for i, game in enumerate(mp_games):
+            rect = game["rect"]
+            is_selected = True  # Only one game
+            
+            for glow in range(5, 0, -1):
+                glow_rect = pygame.Rect(
+                    rect.x - glow,
+                    rect.y - glow,
+                    rect.width + glow*2,
+                    rect.height + glow*2
+                )
+                pygame.draw.rect(screen, (GOLD[0]//2, GOLD[1]//2, GOLD[2]//2, 50), 
+                               glow_rect, border_radius=25)
+            
+            pygame.draw.rect(screen, (30, 30, 50), rect, border_radius=20)
+            pygame.draw.rect(screen, GOLD, rect, 5, border_radius=20)
+            
+            game["preview_func"](screen, rect)
+            
+            name_shadow = btn_font.render(game["name"], True, (0, 0, 0))
+            name_text = btn_font.render(game["name"], True, GOLD)
+            screen.blit(name_shadow, (rect.centerx - name_shadow.get_width()//2 + 2, rect.y - 45))
+            screen.blit(name_text, (rect.centerx - name_text.get_width()//2, rect.y - 47))
+            
+            desc = small_font.render(game["description"], True, WHITE)
+            screen.blit(desc, (rect.centerx - desc.get_width()//2, rect.bottom + 10))
+            
+            indicator_y = rect.bottom + 70
+            pygame.draw.polygon(screen, YELLOW, [
+                (rect.centerx - 10, indicator_y),
+                (rect.centerx + 10, indicator_y),
+                (rect.centerx, indicator_y + 15)
+            ])
+            
+            # Instructions
+            inst_text = small_font.render("START ALS HOST - CLIENT JOINT AUTOMATISCH", True, GOLD)
+            screen.blit(inst_text, (W//2 - inst_text.get_width()//2, rect.bottom + 40))
+
     elif state == "pong_score_select":
         screen.fill((20, 10, 40))
         
         draw_3d_text("PONG SETTINGS", title_font, (W//2, 150))
         
         instructions = [
-            "SET THE WINNING SCORE LIMIT",
-            "First player to reach this score wins!"
+            "STEL HET WINNENDE SCORE LIMIET IN",
+            "Je start als HOST - Client joint automatisch"
         ]
         for i, line in enumerate(instructions):
             inst_text = btn_font.render(line, True, CYAN if i == 0 else WHITE)
@@ -1397,7 +2623,7 @@ while True:
         slider_width = 600
         draw_slider(screen, slider_x, slider_y, slider_width, pong_score_limit, 5, 20, 1)
         
-        score_text = btn_font.render(f"FIRST TO {pong_score_limit} POINTS WINS", True, YELLOW)
+        score_text = btn_font.render(f"EERSTE TOT {pong_score_limit} PUNTEN WINT", True, YELLOW)
         screen.blit(score_text, (W//2 - score_text.get_width()//2, H//2 + 120))
 
     elif state == "space_invaders_difficulty_select":
@@ -1451,115 +2677,102 @@ while True:
         speed_slider_rect = snake_game_state['speed_slider_rect']
         new_game_func = snake_game_state['new_game']
 
-        if active_joystick is None and len(joysticks) > 0: active_joystick = 0
+        if active_joystick is None and len(joysticks) > 0: 
+            active_joystick = 0
         
         if active_joystick is not None and active_joystick < len(joysticks):
-            j = joysticks[active_joystick]
+            # Get input from snake handler
+            direction, pause_pressed, select_pressed, back_pressed = snake_input.get_snake_input(active_joystick)
+            dx_snake, dy_snake = direction
 
-            if pause_pressed_edge and not dead:
+            # FIXED: Much easier pause - just press pause button once
+            if pause_pressed and not last_pause_state[active_joystick] and pause_cooldown[active_joystick] <= 0 and not dead:
                 paused = not paused
-                pause_select_pressed = True
+                pause_cooldown[active_joystick] = 20
+            last_pause_state[active_joystick] = pause_pressed
             
-            if not paused and not dead:
-                ax = deadzone(j.get_axis(0))
-                ay = deadzone(j.get_axis(1))
-                if active_joystick == 0: ax=-ax; ay=-ay
-                new_dx,new_dy=snake.dx,snake.dy
-                if abs(ax)>0.5 and abs(ax)>abs(ay): new_dx,new_dy=(1,0) if ax>0 else (-1,0)
-                elif abs(ay)>0.5 and abs(ay)>abs(ax): new_dx,new_dy=(0,1) if ay>0 else (0,-1)
+            # FIXED: Speed adjustment in pause menu - much more responsive
+            if paused and not dead:
+                # Speed adjustment - use left/right buttons or d-pad
+                if dx_snake == 1:  # Right increases speed
+                    speed_multiplier = min(2.0, speed_multiplier + 0.1)
+                elif dx_snake == -1:  # Left decreases speed
+                    speed_multiplier = max(0.3, speed_multiplier - 0.1)
                 
-                for k in range(4):
-                    if j.get_button(k):
-                        dx,dy=btn_map[active_joystick][k]
-                        new_dx,new_dy=dx,dy
-                if (new_dx,new_dy)!=(-snake.dx,-snake.dy): snake.set_dir(new_dx,new_dy)
+                # Also allow axis control for speed
+                if active_joystick < len(joysticks):
+                    j = joysticks[active_joystick]
+                    axis0 = snake_input.deadzone(j.get_axis(0))
+                    if axis0 > 0.5:
+                        speed_multiplier = min(2.0, speed_multiplier + 0.1)
+                    elif axis0 < -0.5:
+                        speed_multiplier = max(0.3, speed_multiplier - 0.1)
+                
+                # Resume with select button
+                if select_pressed and not pause_select_pressed:
+                    paused = False
+                pause_select_pressed = select_pressed
+                
+                # Also allow back button to resume
+                if back_pressed and not pause_select_pressed:
+                    paused = False
+            
+            # Game logic only if not paused and not dead
+            if not paused and not dead:
+                # Set snake direction
+                if dx_snake != 0 or dy_snake != 0:
+                    snake.set_dir(dx_snake, dy_snake)
 
-                timer+=1
+                timer += 1
                 current_speed = base_speed / speed_multiplier
-                if timer>=current_speed:
-                    alive=snake.update()
-                    timer=0
+                if timer >= current_speed:
+                    alive = snake.update()
+                    timer = 0
                     if not alive or snake.body[0] in snake.body[1:]:
-                        dead=True
-                        if snake.score>highscore:
-                            highscore=snake.score
+                        dead = True
+                        if snake.score > highscore:
+                            highscore = snake.score
                             try:
                                 open(HS_FILE,"w").write(str(highscore))
                             except:
                                 pass
                             game_highscores["SNAKE"] = highscore
-                    if snake.body[0]==apple.pos:
-                        snake.grow+=1
-                        snake.score+=1
+                    if snake.body[0] == apple.pos:
+                        snake.grow += 1
+                        snake.score += 1
                         apple.spawn(snake)
-            
-            elif paused and not dead:
-                axis_x = deadzone(j.get_axis(0))
-                if active_joystick == 0: axis_x = -axis_x
-                
-                if abs(axis_x) > 0.5:
-                    if axis_x > 0.5 and last_horiz[active_joystick] <= 0.5:
-                        speed_multiplier = min(1.5, speed_multiplier + 0.1)
-                    elif axis_x < -0.5 and last_horiz[active_joystick] >= -0.5:
-                        speed_multiplier = max(0.5, speed_multiplier - 0.1)
-                
-                for k in range(4):
-                    if j.get_button(k) and not button_last[active_joystick][k]:
-                        dx, dy = btn_map[active_joystick][k]
-                        if dx == 1:
-                            speed_multiplier = min(1.5, speed_multiplier + 0.1)
-                        elif dx == -1:
-                            speed_multiplier = max(0.5, speed_multiplier - 0.1)
-                
-                last_horiz[active_joystick] = axis_x
 
             if dead:
-                axis_y = deadzone(j.get_axis(1))
-                if active_joystick == 0: axis_y = -axis_y
-                
-                if axis_y > 0.5:
+                if dy_snake == 1:
                     menu_index = 1
-                elif axis_y < -0.5:
+                elif dy_snake == -1:
                     menu_index = 0
                 
-                for k in range(4):
-                    if j.get_button(k) and not button_last[active_joystick][k]:
-                        dx, dy = btn_map[active_joystick][k]
-                        if dy == 1:
-                            menu_index = 1
-                        elif dy == -1:
-                            menu_index = 0
-                        elif dx == 1:
-                            menu_index = 1
-                        elif dx == -1:
-                            menu_index = 0
-                
-                k5_pressed = j.get_button(5)
-                
-                if k5_pressed and not dead_select_pressed:
+                # Handle death screen selection
+                if select_pressed and not dead_select_pressed:
                     dead_select_pressed = True
                     if menu_index == 0:
+                        # Restart
                         snake, apple = new_game_func()
                         dead = False
                         timer = 0
                         menu_index = 0
                         dead_select_pressed = False
                         speed_multiplier = 1.0
+                        paused = False
                     else:
+                        # Quit
                         restore_original_screen()
                         state = "game_select"
-                        snake_game_state.update({
-                            'snake': snake,
-                            'apple': apple,
-                            'timer': timer,
-                            'speed_multiplier': speed_multiplier,
-                            'dead': dead,
-                            'menu_index': menu_index,
-                            'dead_select_pressed': dead_select_pressed,
-                            'paused': paused
-                        })
-                elif not k5_pressed:
+                        continue
+                elif not select_pressed:
                     dead_select_pressed = False
+                
+                # Also allow back button to go back
+                if back_pressed and not dead_select_pressed:
+                    restore_original_screen()
+                    state = "game_select"
+                    continue
 
         snake_game_state.update({
             'snake': snake,
@@ -1575,7 +2788,7 @@ while True:
 
         screen.fill(LIGHT_BLUE)
         
-        pygame.draw.rect(screen, DARK_GREEN, 
+        pygame.draw.rect(screen, DARK_GREEN_ALT, 
                         (grid_x-5, grid_y-5, grid_width+10, grid_height+10), 
                         border_radius=15)
         
@@ -1593,6 +2806,7 @@ while True:
         apple.draw(screen)
         snake.draw(screen)
         
+        # FIXED: Better UI with pause indicator
         score_bg = pygame.Rect(15, 15, 250, 50)
         pygame.draw.rect(screen, (0, 0, 0, 150), score_bg, border_radius=10)
         pygame.draw.rect(screen, WHITE, score_bg, 2, border_radius=10)
@@ -1604,25 +2818,44 @@ while True:
         pygame.draw.rect(screen, WHITE, speed_bg, 2, border_radius=10)
         speed_text = score_font.render(f"SPEED: {speed_multiplier:.1f}x", True, YELLOW)
         screen.blit(speed_text, (W - speed_text.get_width() - 30, 30))
+        
+        # Show pause hint
+        if not paused and not dead:
+            pause_hint = small_font.render("PRESS PAUSE (BUTTON 4) TO PAUSE", True, WHITE)
+            screen.blit(pause_hint, (W//2 - pause_hint.get_width()//2, H - 50))
 
+        # FIXED: Much more prominent pause screen
         if paused and not dead:
             overlay = pygame.Surface((W, H), pygame.SRCALPHA)
-            overlay.fill((0, 0, 0, 180))
+            overlay.fill((0, 0, 0, 200))  # Darker overlay
             screen.blit(overlay, (0, 0))
             
-            pygame.draw.rect(screen, (40, 40, 60), pause_panel, border_radius=24)
-            pygame.draw.rect(screen, (100, 100, 150), pause_panel, 4, border_radius=24)
+            pygame.draw.rect(screen, (40, 40, 80), pause_panel, border_radius=24)
+            pygame.draw.rect(screen, YELLOW, pause_panel, 6, border_radius=24)
             
             title = title_font.render("PAUSED", True, YELLOW)
             title_shadow = title_font.render("PAUSED", True, (100, 100, 0))
-            screen.blit(title_shadow, (W//2 - title.get_width()//2 + 3, pause_panel.y + 33))
-            screen.blit(title, (W//2 - title.get_width()//2, pause_panel.y + 30))
+            screen.blit(title_shadow, (W//2 - title.get_width()//2 + 4, pause_panel.y + 44))
+            screen.blit(title, (W//2 - title.get_width()//2, pause_panel.y + 40))
             
+            # Speed control section
             speed_title = btn_font.render("SPEED MULTIPLIER", True, LIGHT_BLUE)
-            screen.blit(speed_title, (W//2 - speed_title.get_width()//2, pause_panel.y + 120))
+            screen.blit(speed_title, (W//2 - speed_title.get_width()//2, pause_panel.y + 140))
             
+            # Draw speed value
+            speed_value = title_font.render(f"{speed_multiplier:.1f}x", True, YELLOW)
+            screen.blit(speed_value, (W//2 - speed_value.get_width()//2, pause_panel.y + 200))
+            
+            # Draw slider
             draw_slider(screen, speed_slider_rect.x, speed_slider_rect.y + 20, 
-                       speed_slider_rect.width, speed_multiplier, 0.5, 1.5, 0.1)
+                       speed_slider_rect.width, speed_multiplier, 0.3, 2.0, 0.1)
+            
+            # Control hints
+            control1 = score_font.render("LEFT/RIGHT: Adjust Speed", True, WHITE)
+            screen.blit(control1, (W//2 - control1.get_width()//2, pause_panel.y + 300))
+            
+            control2 = btn_font.render("PRESS SELECT TO RESUME", True, GREEN)
+            screen.blit(control2, (W//2 - control2.get_width()//2, pause_panel.y + 380))
 
         if dead:
             overlay = pygame.Surface((W, H), pygame.SRCALPHA)
@@ -1676,62 +2909,38 @@ while True:
         quit_btn = pong_game_state['quit_btn']
         menu_index = pong_game_state['menu_index']
         dead_select_pressed = pong_game_state['dead_select_pressed']
+        paused = pong_game_state['paused']
+        pause_select_pressed = pong_game_state['pause_select_pressed']
         
-        for player_num in range(2):
-            if player_num < len(joysticks):
-                j = joysticks[player_num]
-                
-                axis_y = deadzone(j.get_axis(1))
-                if player_num == 0:
-                    axis_y = -axis_y
-                    
-                if abs(axis_y) > 0.3:
-                    paddles[1 - player_num].move(axis_y, court_y, court_y + court_height)
-                
-                if j.get_button(0):
-                    paddles[1 - player_num].move(1, court_y, court_y + court_height)
-                if j.get_button(2):
-                    paddles[1 - player_num].move(-1, court_y, court_y + court_height)
-        
-        if game_over:
-            for player_num in range(2):
-                if player_num < len(joysticks):
-                    j = joysticks[player_num]
-                    
-                    axis_y = deadzone(j.get_axis(1))
-                    if player_num == 0:
-                        axis_y = -axis_y
-                    
-                    if axis_y > 0.5:
-                        menu_index = 1
-                    elif axis_y < -0.5:
-                        menu_index = 0
-                    
-                    for btn in range(4):
-                        pressed = j.get_button(btn)
-                        if pressed and not button_last[player_num][btn]:
-                            dx, dy = btn_map[player_num][btn]
-                            if dy == 1:
-                                menu_index = 1
-                            elif dy == -1:
-                                menu_index = 0
-                            elif dx == 1:
-                                menu_index = 1
-                            elif dx == -1:
-                                menu_index = 0
+        # Handle pause menu input
+        if paused and not game_over:
+            # Check for select button to resume from either controller
+            select_pressed = False
+            for p in range(min(2, len(joysticks))):
+                j = joysticks[p]
+                select_btn = MENU_INPUT_CONFIG["select_button"]
+                if select_btn < j.get_numbuttons() and j.get_button(select_btn):
+                    select_pressed = True
+                    break
             
-            if btn_select_edge and not dead_select_pressed:
-                dead_select_pressed = True
-                if menu_index == 0:
-                    state = "pong_score_select"
-                    restore_original_screen()
-                else:
-                    restore_original_screen()
-                    state = "game_select"
-            elif not btn_select_edge:
-                dead_select_pressed = False
+            if select_pressed and not pause_select_pressed:
+                paused = False
+            pause_select_pressed = select_pressed
         
-        if not game_over:
+        # Game logic only if not paused and not game over
+        if not game_over and not paused:
+            # Player 2 (right paddle) - Uses controller 0
+            if len(joysticks) > 0:
+                move_p2 = pong_input.get_pong_input(0)  # Controller 0
+                if move_p2 != 0:
+                    paddles[1].move(move_p2, court_y, court_y + court_height)  # Paddle 2 (RED)
+            
+            # Player 1 (left paddle) - Uses controller 1
+            if len(joysticks) > 1:
+                move_p1 = pong_input.get_pong_input(1)  # Controller 1
+                if move_p1 != 0:
+                    paddles[0].move(move_p1, court_y, court_y + court_height)  # Paddle 1 (BLUE)
+            
             scored, scoring_player = ball.update(
                 court_y, 
                 court_y + court_height,
@@ -1756,6 +2965,31 @@ while True:
             if countdown == 0:
                 message = ""
         
+        if game_over:
+            # Handle game over menu with menu input from either controller
+            players = range(min(2, len(joysticks)))
+            direction, select_pressed, back_pressed = menu_input.get_menu_input(players)
+            dx, dy = direction
+            
+            if dy == 1:
+                menu_index = 1
+            elif dy == -1:
+                menu_index = 0
+            
+            if select_pressed and not dead_select_pressed:
+                dead_select_pressed = True
+                if menu_index == 0:
+                    # Restart with same settings
+                    pong_game_state = init_pong_game(win_score)
+                    screen = pong_game_state['game_screen']
+                    continue
+                else:
+                    restore_original_screen()
+                    state = "game_select"
+                    continue
+            elif not select_pressed:
+                dead_select_pressed = False
+        
         pong_game_state.update({
             'paddles': paddles,
             'ball': ball,
@@ -1764,7 +2998,9 @@ while True:
             'countdown': countdown,
             'message': message,
             'menu_index': menu_index,
-            'dead_select_pressed': dead_select_pressed
+            'dead_select_pressed': dead_select_pressed,
+            'paused': paused,
+            'pause_select_pressed': pause_select_pressed
         })
 
         screen.fill(COURT_COLOR)
@@ -1815,13 +3051,40 @@ while True:
         win_score_text = small_font.render(f"FIRST TO {win_score} WINS", True, YELLOW)
         screen.blit(win_score_text, (W//2 - win_score_text.get_width()//2, score_y + 90))
         
-        if message and not game_over:
+        # Show pause hint
+        if not paused and not game_over:
+            pause_hint = small_font.render("PRESS PAUSE (BUTTON 4) TO PAUSE", True, WHITE)
+            screen.blit(pause_hint, (W//2 - pause_hint.get_width()//2, H - 50))
+        
+        if message and not game_over and not paused:
             msg_bg = pygame.Rect(W//2 - 300, H//2 - 50, 600, 100)
             pygame.draw.rect(screen, (0, 0, 0, 180), msg_bg, border_radius=20)
             pygame.draw.rect(screen, YELLOW, msg_bg, 3, border_radius=20)
             
             msg_text = btn_font.render(message, True, YELLOW)
             screen.blit(msg_text, (W//2 - msg_text.get_width()//2, H//2 - msg_text.get_height()//2))
+        
+        # Draw pause screen
+        if paused and not game_over:
+            overlay = pygame.Surface((W, H), pygame.SRCALPHA)
+            overlay.fill((0, 0, 0, 200))
+            screen.blit(overlay, (0, 0))
+            
+            pause_panel_width = 600
+            pause_panel_height = 350
+            pause_panel_x = W//2 - pause_panel_width//2
+            pause_panel_y = H//2 - pause_panel_height//2
+            
+            pygame.draw.rect(screen, (40, 40, 80), (pause_panel_x, pause_panel_y, pause_panel_width, pause_panel_height), border_radius=20)
+            pygame.draw.rect(screen, YELLOW, (pause_panel_x, pause_panel_y, pause_panel_width, pause_panel_height), 6, border_radius=20)
+            
+            pause_text = title_font.render("PAUSED", True, YELLOW)
+            pause_rect = pause_text.get_rect(center=(W//2, pause_panel_y + 120))
+            screen.blit(pause_text, pause_rect)
+            
+            resume_text = btn_font.render("PRESS SELECT TO RESUME", True, GREEN)
+            resume_rect = resume_text.get_rect(center=(W//2, pause_panel_y + 240))
+            screen.blit(resume_text, resume_rect)
         
         if game_over:
             overlay = pygame.Surface((W, H), pygame.SRCALPHA)
@@ -1866,20 +3129,56 @@ while True:
             active_joystick = 0
         
         if active_joystick is not None and active_joystick < len(joysticks):
-            j = joysticks[active_joystick]
+            # Get input from space invaders handler
+            action, shoot_pressed, pause_pressed, _ = space_invaders_input.get_space_invaders_input(active_joystick)
             
-            result = game.handle_input(j, button_dir, button_states, btn_select_edge, btn_select_edge, back_pressed_edge)
+            # Handle pause with cooldown
+            if pause_pressed and not last_pause_state[active_joystick] and pause_cooldown[active_joystick] <= 0 and not game.game_over and not game.victory:
+                game.paused = not game.paused
+                pause_cooldown[active_joystick] = 15
+            last_pause_state[active_joystick] = pause_pressed
             
-            if result == "restart":
-                restore_original_screen()
-                state = "space_invaders_difficulty_select"
-                space_invaders_difficulty = 5
-            elif result == "menu":
-                restore_original_screen()
-                state = "game_select"
+            # Handle pause menu input
+            if game.paused:
+                # Check for select to resume
+                select_btn = MENU_INPUT_CONFIG["select_button"]
+                if select_btn < joysticks[active_joystick].get_numbuttons():
+                    select_pressed = joysticks[active_joystick].get_button(select_btn)
+                    if select_pressed and not game.pause_select_pressed:
+                        game.paused = False
+                    game.pause_select_pressed = select_pressed
+            
+            # Handle game input if not paused and not game over
+            if not game.game_over and not game.victory and not game.paused:
+                game.handle_input(action, shoot_pressed, False, False)
+            
+            # Check if game is in dead/victory state and handle menu input
+            if game.game_over or game.victory:
+                direction, menu_select, _ = menu_input.get_menu_input([active_joystick])
+                _, dy_menu = direction
+                selection_made = game.handle_dead_screen_input(dy_menu, menu_select)
+                
+                if selection_made:
+                    if game.dead_menu_index == 0:  # RESTART
+                        space_invaders_game_state = init_space_invaders_game(space_invaders_difficulty)
+                        screen = space_invaders_game_state['game_screen']
+                        continue
+                    else:  # QUIT
+                        restore_original_screen()
+                        state = "game_select"
+                        continue
         
         game.update()
         game.draw(screen)
+
+    # ---------- GAME_MP_PONG ----------
+    elif state == "game_mp_pong" and mp_pong_game is not None:
+        # Run the multiplayer pong game
+        mp_pong_game.run()
+        # After game ends, return to menu
+        restore_original_screen()
+        state = "menu"
+        mp_pong_game = None
 
     pygame.display.flip()
     clock.tick(60)
