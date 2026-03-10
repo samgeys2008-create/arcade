@@ -1381,26 +1381,20 @@ def init_space_invaders_game(difficulty=5):
         'difficulty': difficulty
     }
 
-# ========== MULTIPLAYER PONG - MET VAST IP ==========
+# ========== MULTIPLAYER PONG - MET VAST IP VOOR CLIENT ==========
 class MultiplayerPong:
     def __init__(self, win_score=5):
         self.screen = pygame.display.set_mode((W, H), pygame.FULLSCREEN)
         self.clock = pygame.time.Clock()
         self.win_score = win_score
-        self.is_host = self._check_if_host()
         
-        if self.is_host:
-            print("🎮 Ik ben HOST - wacht op speler 2...")
-            self.game = MultiplayerPongHost(win_score)
-        else:
-            print("🎮 Ik ben CLIENT - verbind met host...")
-            self.game = MultiplayerPongClient()
-    
-    def _check_if_host(self):
-        """Eerste apparaat wordt host, tweede wordt client met vast IP"""
-        # Dit is een SIMPELE manier: eerste start wordt host
+        # Eerste apparaat wordt host, tweede wordt client
         # Voor client moet je het IP aanpassen in MultiplayerPongClient
-        return True  # ALTijd host - voor client zie hieronder
+        self.is_host = True  # Wordt overschreven in client
+        
+        # Start als host
+        print("🎮 Start als HOST - wacht op speler 2...")
+        self.game = MultiplayerPongHost(win_score)
     
     def run(self):
         self.game.run()
@@ -1431,8 +1425,7 @@ class MultiplayerPongHost:
         # Ball
         self.ball_x = self.court_x + self.court_width // 2
         self.ball_y = self.court_y + self.court_height // 2
-        self.ball_speed_x = MP_BALL_SPEED
-        self.ball_speed_y = MP_BALL_SPEED / 2
+        self.reset_ball()
         
         self.score1 = 0
         self.score2 = 0
@@ -1691,8 +1684,8 @@ class MultiplayerPongClient:
         self.paddle1_y = H//2 - 60
         self.game_started = False
         
-        # 🔴🔴🔴 HIER VUL JE HET IP VAN DE HOST IN 🔴🔴🔴
-        self.host_ip = "10.156.5.44"  # ← VERVANG DIT MET HET JUISTE IP!
+        # 🔴 VAST IP VAN DE HOST 🔴
+        self.host_ip = "10.156.5.44"  # ← VERANDER DIT NAAR HET IP VAN DE HOST
         
         # Verbind met host
         self.socket = None
@@ -1711,6 +1704,10 @@ class MultiplayerPongClient:
             return True
         except Exception as e:
             print(f"❌ Kan niet verbinden: {e}")
+            print("   Controleer of:")
+            print("   - De host is gestart")
+            print(f"   - Het IP-adres klopt ({self.host_ip})")
+            print("   - Firewall poort 5555 open staat")
             self.socket = None
             return False
     
@@ -1993,11 +1990,26 @@ while True:
             pong_score_limit = max(5, pong_score_limit - 1)
         
         if select_pressed:
-            state = "game_mp_pong"
-            mp_pong_game = MultiplayerPong(pong_score_limit)
+            # Vraag of dit de host of client is
+            # Voor nu: eerste apparaat is host, tweede is client
+            # In client moet je de MultiplayerPongClient class gebruiken
+            if False:  # Verander dit naar True voor client
+                state = "game_mp_pong_client"
+                mp_pong_game = MultiplayerPongClient()
+            else:
+                state = "game_mp_pong"
+                mp_pong_game = MultiplayerPong(pong_score_limit)
         
         if back_pressed:
             state = "mp_mode_select"
+    
+    elif state == "game_mp_pong_client":
+        if mp_pong_game is None:
+            mp_pong_game = MultiplayerPongClient()
+        mp_pong_game.run()
+        restore_original_screen()
+        state = "menu"
+        mp_pong_game = None
 
     elif state == "space_invaders_difficulty_select":
         if dx == 1:
@@ -2681,6 +2693,12 @@ while True:
 
     # ---------- GAME_MP_PONG ----------
     elif state == "game_mp_pong" and mp_pong_game is not None:
+        mp_pong_game.run()
+        restore_original_screen()
+        state = "menu"
+        mp_pong_game = None
+    
+    elif state == "game_mp_pong_client" and mp_pong_game is not None:
         mp_pong_game.run()
         restore_original_screen()
         state = "menu"
