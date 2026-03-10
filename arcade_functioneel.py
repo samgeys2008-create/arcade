@@ -1381,7 +1381,7 @@ def init_space_invaders_game(difficulty=5):
         'difficulty': difficulty
     }
 
-# ========== MULTIPLAYER PONG - SUPERSIMPEL ==========
+# ========== MULTIPLAYER PONG - MET VAST IP ==========
 class MultiplayerPong:
     def __init__(self, win_score=5):
         self.screen = pygame.display.set_mode((W, H), pygame.FULLSCREEN)
@@ -1390,42 +1390,17 @@ class MultiplayerPong:
         self.is_host = self._check_if_host()
         
         if self.is_host:
-            print("Ik ben HOST - wacht op speler 2...")
+            print("🎮 Ik ben HOST - wacht op speler 2...")
             self.game = MultiplayerPongHost(win_score)
         else:
-            print("Ik ben CLIENT - zoek naar host...")
+            print("🎮 Ik ben CLIENT - verbind met host...")
             self.game = MultiplayerPongClient()
     
     def _check_if_host(self):
-        """Kijk of er al een host is, zo niet word je zelf host"""
-        try:
-            # Vind eigen IP
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            mijn_ip = s.getsockname()[0]
-            s.close()
-            
-            # Bepaal netwerk (bijv. 192.168.1.)
-            ip_delen = mijn_ip.split('.')
-            netwerk = f"{ip_delen[0]}.{ip_delen[1]}.{ip_delen[2]}."
-            
-            # Scan snel of er al een host is
-            for i in range(1, 255):
-                if i == int(ip_delen[3]):  # Sla mezelf over
-                    continue
-                    
-                try:
-                    test = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    test.settimeout(0.05)
-                    test.connect((f"{netwerk}{i}", 5555))
-                    test.close()
-                    return False  # Host gevonden! Ik word client
-                except:
-                    continue
-        except:
-            pass
-        
-        return True  # Geen host gevonden, ik word host
+        """Eerste apparaat wordt host, tweede wordt client met vast IP"""
+        # Dit is een SIMPELE manier: eerste start wordt host
+        # Voor client moet je het IP aanpassen in MultiplayerPongClient
+        return True  # ALTijd host - voor client zie hieronder
     
     def run(self):
         self.game.run()
@@ -1503,6 +1478,9 @@ class MultiplayerPongHost:
             bg_img = pygame.Surface((W, H))
             bg_img.fill((10, 20, 40))
         
+        print(f"🖥️ HOST gestart op IP: {self.get_ip()}")
+        print(f"🔌 Wacht op client op poort 5555...")
+        
         while self.running:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
@@ -1523,7 +1501,7 @@ class MultiplayerPongHost:
                 try:
                     self.client, addr = self.server.accept()
                     self.client.settimeout(0.1)
-                    print(f"Client verbonden: {addr}")
+                    print(f"✅ Client verbonden: {addr}")
                     self.client_connected = True
                     self.start_timer = time.time() + 3
                 except:
@@ -1539,7 +1517,7 @@ class MultiplayerPongHost:
                 self.screen.blit(ip_text, (W//2 - ip_text.get_width()//2, H//2+50))
                 
                 dots = "." * (int(time.time() * 2) % 4)
-                wait_text = self.font.render(f"Zoeken{dots}", True, GRAY)
+                wait_text = self.font.render(f"Wachten{dots}", True, GRAY)
                 self.screen.blit(wait_text, (W//2 - wait_text.get_width()//2, H//2+100))
                 
                 pygame.display.flip()
@@ -1563,6 +1541,7 @@ class MultiplayerPongHost:
                 else:
                     self.game_started = True
                     self.reset_ball()
+                    print("🎮 Spel gestart!")
             
             # GAME LOOP
             if self.game_started and not self.game_over:
@@ -1641,6 +1620,7 @@ class MultiplayerPongHost:
                 self.client = None
                 self.client_connected = False
                 self.game_started = False
+                print("❌ Client verbinding verbroken")
             
             # Teken
             self.screen.blit(bg_img, (0,0))
@@ -1711,48 +1691,33 @@ class MultiplayerPongClient:
         self.paddle1_y = H//2 - 60
         self.game_started = False
         
-        # Find host
+        # 🔴🔴🔴 HIER VUL JE HET IP VAN DE HOST IN 🔴🔴🔴
+        self.host_ip = "10.156.5.44"  # ← VERVANG DIT MET HET JUISTE IP!
+        
+        # Verbind met host
         self.socket = None
-        self._find_host()
+        self._connect_to_host()
         self.running = True
+    
+    def _connect_to_host(self):
+        """Maak direct verbinding met de host op het vaste IP"""
+        print(f"🔌 Verbinden met host op {self.host_ip}:5555...")
         
-    def _find_host(self):
-        """Zoek automatisch de host op het netwerk"""
         try:
-            # Vind eigen IP
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            mijn_ip = s.getsockname()[0]
-            s.close()
-            
-            ip_delen = mijn_ip.split('.')
-            netwerk = f"{ip_delen[0]}.{ip_delen[1]}.{ip_delen[2]}."
-            mijn_laatste = int(ip_delen[3])
-            
-            print(f"Mijn IP: {mijn_ip}")
-            print(f"Zoeken in {netwerk}1-254...")
-            
-            # Scan het netwerk
-            for i in range(1, 255):
-                if i == mijn_laatste:
-                    continue
-                    
-                ip = f"{netwerk}{i}"
-                try:
-                    self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    self.socket.settimeout(0.1)
-                    self.socket.connect((ip, 5555))
-                    print(f"Host gevonden op {ip}!")
-                    return
-                except:
-                    continue
+            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.socket.settimeout(3)
+            self.socket.connect((self.host_ip, 5555))
+            print(f"✅ Verbonden met host!")
+            return True
         except Exception as e:
-            print(f"Fout bij zoeken: {e}")
-        
-        print("Geen host gevonden!")
-        
+            print(f"❌ Kan niet verbinden: {e}")
+            self.socket = None
+            return False
+    
     def run(self):
         if not self.socket:
+            print("❌ Geen verbinding met host. Controleer IP!")
+            time.sleep(3)
             return
         
         try:
@@ -1761,6 +1726,8 @@ class MultiplayerPongClient:
         except:
             bg_img = pygame.Surface((W, H))
             bg_img.fill((10, 20, 40))
+        
+        print("🎮 Wacht op start van host...")
         
         while self.running:
             for event in pygame.event.get():
@@ -1781,7 +1748,9 @@ class MultiplayerPongClient:
             try:
                 self.socket.send(pickle.dumps(self.paddle2.y))
             except:
+                print("❌ Verbinding verbroken")
                 self.running = False
+                break
             
             # Ontvang game state
             try:
@@ -1801,7 +1770,9 @@ class MultiplayerPongClient:
                     self.game_started = state['game_started']
                     self.paddle1_y = state['paddle1_y']
             except:
+                print("❌ Fout bij ontvangen data")
                 self.running = False
+                break
             
             # Teken
             self.screen.blit(bg_img, (0,0))
@@ -2174,7 +2145,7 @@ while True:
                 (rect.centerx, indicator_y + 15)
             ])
             
-            inst_text = small_font.render("START OP BEIDE APPARATEN - HOST WORDT AUTOMATISCH Gekozen", True, GOLD)
+            inst_text = small_font.render("START OP BEIDE APPARATEN", True, GOLD)
             screen.blit(inst_text, (W//2 - inst_text.get_width()//2, rect.bottom + 40))
 
     elif state == "pong_score_select":
@@ -2184,7 +2155,7 @@ while True:
         
         instructions = [
             "STEL HET WINNENDE SCORE LIMIET IN",
-            "START OP BEIDE APPARATEN - HOST WORDT AUTOMATISCH Gekozen"
+            "START OP BEIDE APPARATEN"
         ]
         for i, line in enumerate(instructions):
             inst_text = btn_font.render(line, True, CYAN if i == 0 else WHITE)
