@@ -1,2 +1,3 @@
-sudo dhclient -r wlx080074733ad1
-sudo dhclient wlx080074733ad1
+sudo ip addr flush dev wlx080074733ad1
+sudo ip addr add 10.156.5.45/21 dev wlx080074733ad1
+sudo ip route add default via 10.156.0.1 dev wlx080074733ad1
