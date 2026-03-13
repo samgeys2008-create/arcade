@@ -1,25 +1,4 @@
-# save als test_client_simple.py op 10.153.3.224
-import socket
-
-def test_connect():
-    print("Probeer verbinding met server...")
-    
-    for poging in range(3):
-        try:
-            client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            client.settimeout(5)
-            client.connect(('10.156.5.44', 5555))
-            print(f"✅ Poging {poging+1}: VERBONDEN!")
-            
-            data = client.recv(1024)
-            print(f"✅ Ontvangen: {data.decode()}")
-            
-            client.close()
-            return True
-            
-        except Exception as e:
-            print(f"❌ Poging {poging+1}: Fout - {e}")
-    
-    return False
-
-test_connect()
+# Vervang wlan0 door jouw interface naam!
+sudo ip addr flush dev wlan0
+sudo ip addr add 10.156.5.45/21 dev wlan0
+sudo ip link set wlan0 up
