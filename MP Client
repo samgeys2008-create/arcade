@@ -1,236 +1,25 @@
-import pygame
+# save als test_client_simple.py op 10.153.3.224
 import socket
-import threading
-import pickle
-import time
 
-# Initialiseer Pygame
-pygame.init()
-
-# Scherm instellingen
-SCREEN_WIDTH = 800
-SCREEN_HEIGHT = 600
-screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-pygame.display.set_caption("Pong - Client")
-
-# Kleuren
-WHITE = (255, 255, 255)
-BLACK = (0, 0, 0)
-RED = (255, 0, 0)
-GREEN = (0, 255, 0)
-
-# Paddle instellingen
-PADDLE_WIDTH = 10
-PADDLE_HEIGHT = 100
-PADDLE_SPEED = 5
-
-# Bal instellingen
-BALL_SIZE = 10
-
-class Paddle:
-    def __init__(self, x, y):
-        self.rect = pygame.Rect(x, y, PADDLE_WIDTH, PADDLE_HEIGHT)
-        self.score = 0
+def test_connect():
+    print("Probeer verbinding met server...")
     
-    def move_up(self):
-        if self.rect.top > 0:
-            self.rect.y -= PADDLE_SPEED
-    
-    def move_down(self):
-        if self.rect.bottom < SCREEN_HEIGHT:
-            self.rect.y += PADDLE_SPEED
-    
-    def update_from_data(self, y):
-        self.rect.y = y
-
-class Ball:
-    def __init__(self):
-        self.rect = pygame.Rect(SCREEN_WIDTH // 2 - BALL_SIZE // 2, 
-                                SCREEN_HEIGHT // 2 - BALL_SIZE // 2, 
-                                BALL_SIZE, BALL_SIZE)
-        self.speed_x = 0
-        self.speed_y = 0
-    
-    def update_from_data(self, x, y, speed_x, speed_y):
-        self.rect.x = x
-        self.rect.y = y
-        self.speed_x = speed_x
-        self.speed_y = speed_y
-
-class NetworkGame:
-    def __init__(self, server_ip, port):
-        self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server_ip = server_ip
-        self.port = port
-        self.running = True
-        self.connected = False
-        self.last_received_time = time.time()
-        
-        # Game objecten
-        self.player_paddle = Paddle(SCREEN_WIDTH - 50 - PADDLE_WIDTH, 
-                                    SCREEN_HEIGHT // 2 - PADDLE_HEIGHT // 2)
-        self.opponent_paddle = Paddle(50, SCREEN_HEIGHT // 2 - PADDLE_HEIGHT // 2)
-        self.ball = Ball()
-        
-        # Verbind met server
-        self.connect_to_server()
-        
-        if self.connected:
-            # Start thread voor ontvangen data
-            self.receive_thread = threading.Thread(target=self.receive_data)
-            self.receive_thread.daemon = True
-            self.receive_thread.start()
-    
-    def connect_to_server(self):
+    for poging in range(3):
         try:
-            print(f"Probeer te verbinden met {self.server_ip}:{self.port}...")
-            self.client_socket.settimeout(5)
-            self.client_socket.connect((self.server_ip, self.port))
-            self.client_socket.settimeout(None)
-            self.connected = True
-            print(f"✅ Verbonden met server {self.server_ip}:{self.port}")
+            client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            client.settimeout(5)
+            client.connect(('10.156.5.44', 5555))
+            print(f"✅ Poging {poging+1}: VERBONDEN!")
+            
+            data = client.recv(1024)
+            print(f"✅ Ontvangen: {data.decode()}")
+            
+            client.close()
+            return True
+            
         except Exception as e:
-            print(f"❌ Kan niet verbinden met server: {e}")
-            self.running = False
+            print(f"❌ Poging {poging+1}: Fout - {e}")
     
-    def receive_data(self):
-        while self.running and self.connected:
-            try:
-                data = self.client_socket.recv(4096)  # Grotere buffer
-                if data:
-                    self.last_received_time = time.time()
-                    game_data = pickle.loads(data)
-                    # Update game state
-                    self.opponent_paddle.update_from_data(game_data['paddle_y'])
-                    self.ball.update_from_data(
-                        game_data['ball_x'],
-                        game_data['ball_y'],
-                        game_data['ball_speed_x'],
-                        game_data['ball_speed_y']
-                    )
-                    self.player_paddle.score = game_data['opponent_score']
-                    self.opponent_paddle.score = game_data['player_score']
-                    print(f"Data ontvangen: bal=({game_data['ball_x']}, {game_data['ball_y']})")  # Debug
-                else:
-                    print("Geen data ontvangen, verbinding mogelijk verbroken")
-                    break
-            except Exception as e:
-                print(f"Fout bij ontvangen: {e}")
-                break
-    
-    def send_data(self):
-        if self.connected:
-            try:
-                game_data = {
-                    'paddle_y': self.player_paddle.rect.y
-                }
-                self.client_socket.send(pickle.dumps(game_data))
-                return True
-            except Exception as e:
-                print(f"Fout bij verzenden: {e}")
-                self.connected = False
-                return False
-        return False
+    return False
 
-def main():
-    clock = pygame.time.Clock()
-    font = pygame.font.Font(None, 36)
-    small_font = pygame.font.Font(None, 24)
-    
-    print("Start Pong Client...")
-    
-    # Maak client
-    game_client = NetworkGame('10.156.5.44', 5555)
-    
-    if not game_client.running or not game_client.connected:
-        print("Kan niet starten zonder serververbinding")
-        # Toon foutmelding op scherm
-        screen.fill(BLACK)
-        error_text = font.render("Kan niet verbinden met server!", True, RED)
-        error_text2 = small_font.render(f"Server: 10.156.5.44:5555", True, WHITE)
-        screen.blit(error_text, (SCREEN_WIDTH//2 - error_text.get_width()//2, SCREEN_HEIGHT//2 - 50))
-        screen.blit(error_text2, (SCREEN_WIDTH//2 - error_text2.get_width()//2, SCREEN_HEIGHT//2))
-        pygame.display.flip()
-        pygame.time.wait(3000)
-        pygame.quit()
-        return
-    
-    running = True
-    last_send_time = 0
-    send_interval = 1/30  # 30 updates per seconde
-    frame_count = 0
-    
-    print("Client draait, wacht op data...")
-    
-    while running:
-        current_time = time.time()
-        frame_count += 1
-        
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
-            elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
-                    running = False
-        
-        # Besturing client (pijltjes omhoog/omlaag)
-        keys = pygame.key.get_pressed()
-        if keys[pygame.K_UP]:
-            game_client.player_paddle.move_up()
-        if keys[pygame.K_DOWN]:
-            game_client.player_paddle.move_down()
-        
-        # Stuur paddle positie naar server
-        if current_time - last_send_time >= send_interval:
-            game_client.send_data()
-            last_send_time = current_time
-        
-        # Check of we nog data ontvangen
-        time_since_last = current_time - game_client.last_received_time
-        if time_since_last > 3:  # 3 seconden geen data
-            print(f"Waarschuwing: {time_since_last:.1f} seconden geen data ontvangen!")
-        
-        # Teken scherm
-        screen.fill(BLACK)
-        
-        # Teken middenlijn
-        for y in range(0, SCREEN_HEIGHT, 20):
-            pygame.draw.rect(screen, WHITE, (SCREEN_WIDTH//2 - 2, y, 4, 10))
-        
-        # Teken paddles
-        pygame.draw.rect(screen, WHITE, game_client.player_paddle.rect)
-        pygame.draw.rect(screen, WHITE, game_client.opponent_paddle.rect)
-        
-        # Teken bal
-        pygame.draw.rect(screen, WHITE, game_client.ball.rect)
-        
-        # Teken scores
-        player_score_text = font.render(str(game_client.player_paddle.score), True, WHITE)
-        opponent_score_text = font.render(str(game_client.opponent_paddle.score), True, WHITE)
-        screen.blit(player_score_text, (3 * SCREEN_WIDTH//4, 50))
-        screen.blit(opponent_score_text, (SCREEN_WIDTH//4, 50))
-        
-        # Debug info
-        status_color = GREEN if game_client.connected else RED
-        status_text = small_font.render(f"Verbonden: {game_client.connected}", True, status_color)
-        screen.blit(status_text, (10, 10))
-        
-        last_recv_text = small_font.render(f"Laatste data: {time_since_last:.1f}s geleden", True, WHITE)
-        screen.blit(last_recv_text, (10, 30))
-        
-        frame_text = small_font.render(f"Frame: {frame_count}", True, WHITE)
-        screen.blit(frame_text, (10, 50))
-        
-        if game_client.ball.rect.x > 0:  # Alleen tonen als er data is
-            ball_text = small_font.render(f"Bal: ({game_client.ball.rect.x}, {game_client.ball.rect.y})", True, WHITE)
-            screen.blit(ball_text, (10, 70))
-        
-        pygame.display.flip()
-        clock.tick(60)
-    
-    game_client.running = False
-    game_client.client_socket.close()
-    pygame.quit()
-
-if __name__ == "__main__":
-    main()
+test_connect()
