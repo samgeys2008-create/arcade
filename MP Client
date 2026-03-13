@@ -1,3 +1,2 @@
-sudo ip addr flush dev wlx080074733ad1
-sudo ip addr add 10.156.5.45/21 dev wlx080074733ad1
-sudo ip link set wlx080074733ad1 up
+sudo dhclient -r wlx080074733ad1
+sudo dhclient wlx080074733ad1
