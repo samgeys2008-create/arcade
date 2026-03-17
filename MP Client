@@ -1,303 +1,231 @@
 import pygame
 import socket
-import threading
 import pickle
+import threading
 import sys
+
+# Vraag IP
+if len(sys.argv) > 1:
+    ip = sys.argv[1]
+else:
+    ip = input("Server IP (Enter voor localhost): ") or "localhost"
+
+# Verbind met server
+client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+client.connect((ip, 5555))
+mijn_id = pickle.loads(client.recv(1024))['id']
+
+print(f"Verbonden als speler {mijn_id+1}!")
+if mijn_id == 0:
+    print("Jij bent LINKS - gebruik W en S")
+else:
+    print("Jij bent RECHTS - gebruik PIJLTJES")
+import pickle
 import time
 
-# Pygame initialisatie
+# Pygame setup
+# Initialize Pygame
 pygame.init()
+scherm = pygame.display.set_mode((800, 600))
+pygame.display.set_caption(f"Pong - Speler {mijn_id+1}")
+klok = pygame.time.Clock()
 
+# Game variabelen
+p1_y = 250
+p2_y = 250
+bal_x = 400
+bal_y = 300
+bezig = True
+
+def ontvang_data():
+    global p1_y, p2_y, bal_x, bal_y
+    while bezig:
+        try:
+            data = pickle.loads(client.recv(1024))
+            p1_y = data['p1']
+            p2_y = data['p2']
+            bal_x = data['bx']
+            bal_y = data['by']
+        except:
+            break
 # Constants
 WIDTH, HEIGHT = 800, 400
 FPS = 60
-PADDLE_WIDTH, PADDLE_HEIGHT = 10, 100
-BALL_SIZE = 15
+PADDLE_WIDTH, PADDLE_HEIGHT = 10, 80
+BALL_SIZE = 10
 PADDLE_SPEED = 5
-
-# Kleuren
 WHITE = (255, 255, 255)
 BLACK = (0, 0, 0)
-GRAY = (128, 128, 128)
-GREEN = (0, 255, 0)
-RED = (255, 0, 0)
 
+# Start ontvangst thread
+thread = threading.Thread(target=ontvang_data)
+thread.daemon = True
+thread.start()
+# Network settings
+SERVER_IP = input("Enter server IP address: ")  # e.g., "192.168.1.100"
+PORT = 5555
+
+# Game loop
+while bezig:
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            bezig = False
+    
+    # Input verwerken
+    keys = pygame.key.get_pressed()
 class PongClient:
-    def __init__(self, host_ip):
-        self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
-        pygame.display.set_caption("Pong - CLIENT (rechter paddle)")
-        self.clock = pygame.time.Clock()
-        self.font = pygame.font.Font(None, 36)
-        self.small_font = pygame.font.Font(None, 24)
-        
-        # Game objecten (worden geüpdatet door server)
-        self.paddle2 = pygame.Rect(WIDTH - 40, HEIGHT//2 - PADDLE_HEIGHT//2,
-                                   PADDLE_WIDTH, PADDLE_HEIGHT)
-        self.ball = pygame.Rect(WIDTH//2 - BALL_SIZE//2, 
-                                HEIGHT//2 - BALL_SIZE//2,
+    def __init__(self):
+        # Game objects (will be updated from server)
+        self.left_paddle = pygame.Rect(30, HEIGHT//2 - PADDLE_HEIGHT//2, 
+                                       PADDLE_WIDTH, PADDLE_HEIGHT)
+        self.right_paddle = pygame.Rect(WIDTH - 40, HEIGHT//2 - PADDLE_HEIGHT//2,
+                                        PADDLE_WIDTH, PADDLE_HEIGHT)
+        self.ball = pygame.Rect(WIDTH//2 - BALL_SIZE//2, HEIGHT//2 - BALL_SIZE//2,
                                 BALL_SIZE, BALL_SIZE)
-        self.score1 = 0
-        self.score2 = 0
         
-        # Netwerk setup
-        self.client = ClientHandler(host_ip)
-        self.client.start()
+        # Scores
+        self.left_score = 0
+        self.right_score = 0
         
+        # Network
+        self.socket = None
         self.connected = False
-        self.running = True
-        self.last_send_time = 0
-        self.send_interval = 1.0 / 30  # 30 keer per seconde
-        self.last_update_time = time.time()
-        self.connection_timeout = 3.0  # Timeout na 3 seconden zonder data
         
-    def handle_input(self):
-        """Verwerk input voor client paddle"""
-        keys = pygame.key.get_pressed()
-        moved = False
+        # Setup screen
+        self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
+        pygame.display.set_caption("Pong Client (Right Paddle)")
+        self.clock = pygame.time.Clock()
         
-        if keys[pygame.K_UP] and self.paddle2.top > 0:
-            self.paddle2.y -= PADDLE_SPEED
-            moved = True
-        if keys[pygame.K_DOWN] and self.paddle2.bottom < HEIGHT:
-            self.paddle2.y += PADDLE_SPEED
-            moved = True
-            
-        return moved
-        
-    def draw(self):
-        """Teken het spel"""
-        self.screen.fill(BLACK)
-        
-        # Middellijn
-        pygame.draw.line(self.screen, GRAY, (WIDTH//2, 0), (WIDTH//2, HEIGHT), 2)
-        
-        # Paddles (teken alleen de client paddle, host paddle wordt niet getoond)
-        pygame.draw.rect(self.screen, WHITE, self.paddle2)
-        
-        # Bal
-        pygame.draw.ellipse(self.screen, WHITE, self.ball)
-        
-        # Score
-        score_text = self.font.render(f"{self.score1} - {self.score2}", 
-                                      True, WHITE)
-        score_rect = score_text.get_rect(center=(WIDTH//2, 30))
-        self.screen.blit(score_text, score_rect)
-        
-        # Status
-        if not self.connected:
-            connect_text = self.small_font.render(f"Verbinden met {self.client.host}:{self.client.port}...", 
-                                                 True, GRAY)
-            connect_rect = connect_text.get_rect(center=(WIDTH//2, HEIGHT//2))
-            self.screen.blit(connect_text, connect_rect)
-            
-            # Wacht animatie
-            dots = "." * (int(time.time() * 2) % 4)
-            wait_text = self.small_font.render(f"Verbinden{dots}", True, GRAY)
-            wait_rect = wait_text.get_rect(center=(WIDTH//2, HEIGHT//2 + 30))
-            self.screen.blit(wait_text, wait_rect)
-        else:
-            # Verbindingsstatus
-            if time.time() - self.last_update_time < self.connection_timeout:
-                status_color = GREEN
-                status_text = "Verbonden"
-            else:
-                status_color = RED
-                status_text = "Verbinding verbroken!"
-                
-            conn_text = self.small_font.render(status_text, True, status_color)
-            conn_rect = conn_text.get_rect(center=(WIDTH//2, HEIGHT-40))
-            self.screen.blit(conn_text, conn_rect)
-            
-            controls_text = self.small_font.render("Jij: pijltjes omhoog/omlaag", True, WHITE)
-            controls_rect = controls_text.get_rect(center=(WIDTH//2, HEIGHT-20))
-            self.screen.blit(controls_text, controls_rect)
-        
-        # Ping/FPS indicator
-        if self.connected:
-            ping = self.client.get_ping()
-            ping_text = self.small_font.render(f"Ping: {ping}ms", True, WHITE)
-            ping_rect = ping_text.get_rect(topright=(WIDTH-10, 10))
-            self.screen.blit(ping_text, ping_rect)
-        
-        pygame.display.flip()
-        
-    def send_paddle_position(self):
-        """Stuur paddle positie naar server"""
-        current_time = time.time()
-        if current_time - self.last_send_time >= self.send_interval:
-            data = {'paddle2_y': self.paddle2.y}
-            self.client.send_data(data)
-            self.last_send_time = current_time
-        
-    def receive_game_state(self):
-        """Ontvang game state van server"""
-        state = self.client.get_latest_state()
-        if state:
-            # Update game objects met server state
-            if 'ball_x' in state:
-                self.ball.x = state['ball_x']
-            if 'ball_y' in state:
-                self.ball.y = state['ball_y']
-            if 'score1' in state:
-                self.score1 = state['score1']
-            if 'score2' in state:
-                self.score2 = state['score2']
-            
-            # Update timestamp voor timeout check
-            self.last_update_time = time.time()
-            
-            # Markeer als verbonden
-            if not self.connected:
-                self.connected = True
-                print("Verbonden met server! Spel kan beginnen.")
-            
-    def run(self):
-        """Main game loop"""
-        print("=" * 50)
-        print("PONG - CLIENT MODE")
-        print("=" * 50)
-        print(f"\nVerbinden met host: {self.client.host}:{self.client.port}")
-        print("\nGebruik pijltjes omhoog/omlaag om je paddle te besturen!")
-        print("\nWachten op verbinding...")
-        
-        while self.running:
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    self.running = False
-                    
-            # Verwerk input
-            moved = self.handle_input()
-            
-            # Stuur paddle positie (alleen als er beweging is of periodiek)
-            if moved or time.time() - self.last_send_time >= 0.1:
-                self.send_paddle_position()
-            
-            # Ontvang game state
-            self.receive_game_state()
-            
-            # Check timeout
-            if self.connected and time.time() - self.last_update_time > self.connection_timeout:
-                self.connected = False
-                print("Verbinding met server verbroken!")
-                
-            self.draw()
-            self.clock.tick(FPS)
-            
-        self.client.stop()
-        pygame.quit()
-        sys.exit()
+        # Connect to server
+        self.connect_to_server()
 
-class ClientHandler:
-    def __init__(self, host):
-        self.host = host
-        self.port = 5555
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.running = False
-        self.latest_state = None
-        self.lock = threading.Lock()
-        self.connected = False
-        self.ping_start = 0
-        self.ping = 0
-        
-    def start(self):
-        """Start de client verbinding"""
-        self.running = True
-        self.thread = threading.Thread(target=self._client_loop)
-        self.thread.daemon = True
-        self.thread.start()
-        
-    def _client_loop(self):
+    if mijn_id == 0:  # Speler 1 (links)
+        if keys[pygame.K_w]:
+            client.send(pickle.dumps({'y': max(0, p1_y - 7)}))
+        if keys[pygame.K_s]:
+            client.send(pickle.dumps({'y': min(500, p1_y + 7)}))
+    else:  # Speler 2 (rechts)
+        if keys[pygame.K_UP]:
+            client.send(pickle.dumps({'y': max(0, p2_y - 7)}))
+        if keys[pygame.K_DOWN]:
+            client.send(pickle.dumps({'y': min(500, p2_y + 7)}))
+    
+    # Tekenen
+    scherm.fill((0, 0, 0))
+    def connect_to_server(self):
+        """Connect to the server"""
         try:
-            # Verbind met server
-            print(f"Verbinden met {self.host}:{self.port}...")
-            self.socket.connect((self.host, self.port))
+            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.socket.connect((SERVER_IP, PORT))
             self.connected = True
-            print("Verbonden met server!")
+            print("Connected to server!")
             
-            # Ontvang welkomstbericht
-            data = self.socket.recv(4096)
-            if data:
-                welcome = pickle.loads(data)
-                if 'connected' in welcome:
-                    print("Handshake compleet!")
-            
-            while self.running and self.connected:
-                try:
-                    # Ontvang data van server
-                    self.socket.settimeout(1.0)
-                    data = self.socket.recv(4096)
-                    
-                    if data:
-                        # Bereken ping
-                        if self.ping_start > 0:
-                            self.ping = int((time.time() - self.ping_start) * 1000)
-                            self.ping_start = 0
-                            
-                        # Verwerk ontvangen state
-                        received = pickle.loads(data)
-                        with self.lock:
-                            self.latest_state = received
-                            
-                except socket.timeout:
-                    continue
-                except Exception as e:
-                    print(f"Fout bij ontvangen van server: {e}")
-                    break
-                    
-        except ConnectionRefusedError:
-            print(f"Kan niet verbinden met {self.host}:{self.port}. Is de server wel gestart?")
-        except Exception as e:
-            print(f"Client fout: {e}")
-        finally:
-            self.connected = False
-            
-    def send_data(self, data):
-        """Stuur data naar server"""
+            # Start receive thread
+            thread = threading.Thread(target=self.receive_data)
+            thread.daemon = True
+            thread.start()
+        except:
+            print("Failed to connect to server. Make sure the server is running.")
+
+    # Middenlijn
+    pygame.draw.line(scherm, (255, 255, 255), (400, 0), (400, 600), 2)
+    def receive_data(self):
+        """Receive game state from server"""
+        while self.connected:
+            try:
+                data = self.socket.recv(4096)
+                if data:
+                    game_state = pickle.loads(data)
+                    self.ball = game_state['ball']
+                    self.left_paddle = game_state['left_paddle']
+                    self.right_paddle = game_state['right_paddle']
+                    self.left_score = game_state['left_score']
+                    self.right_score = game_state['right_score']
+            except:
+                self.connected = False
+                break
+
+    # Paddles
+    pygame.draw.rect(scherm, (255, 255, 255), (50, p1_y, 10, 100))
+    pygame.draw.rect(scherm, (255, 255, 255), (740, p2_y, 10, 100))
+    def send_data(self):
+        """Send paddle position to server"""
         try:
             if self.connected:
-                # Start ping meting bij verzenden
-                self.ping_start = time.time()
-                
-                data_bytes = pickle.dumps(data)
-                self.socket.send(data_bytes)
-        except Exception as e:
-            print(f"Fout bij verzenden: {e}")
-            self.connected = False
-            
-    def get_latest_state(self):
-        """Haal laatste state op"""
-        with self.lock:
-            state = self.latest_state
-            self.latest_state = None
-            return state
-            
-    def get_ping(self):
-        """Geef huidige ping terug"""
-        return self.ping
-        
-    def stop(self):
-        """Stop client"""
-        self.running = False
-        self.connected = False
-        try:
-            self.socket.close()
+                self.socket.send(pickle.dumps(self.right_paddle.y))
         except:
             pass
 
-def main():
-    """Main functie voor client"""
-    print("PONG - CLIENT")
-    print("-" * 30)
-    
-    # Vraag IP-adres van host
-    if len(sys.argv) > 1:
-        host_ip = sys.argv[1]
-    else:
-        host_ip = input("Voer het IP-adres van de host in: ")
-    
-    # Start client
-    game = PongClient(host_ip)
-    game.run()
+    # Bal
+    pygame.draw.circle(scherm, (255, 255, 255), (int(bal_x), int(bal_y)), 10)
+    def move_paddle(self):
+        """Move right paddle based on keyboard input"""
+        keys = pygame.key.get_pressed()
+        if keys[pygame.K_UP] and self.right_paddle.top > 0:
+            self.right_paddle.y -= PADDLE_SPEED
+        if keys[pygame.K_DOWN] and self.right_paddle.bottom < HEIGHT:
+            self.right_paddle.y += PADDLE_SPEED
 
+    # Tekst
+    font = pygame.font.Font(None, 36)
+    if mijn_id == 0:
+        tekst = font.render("Speler 1 (W/S)", True, (0, 255, 0))
+    else:
+        tekst = font.render("Speler 2 (Pijltjes)", True, (0, 255, 0))
+    scherm.blit(tekst, (10, 10))
+    def draw(self):
+        """Draw game objects"""
+        self.screen.fill(BLACK)
+        
+        # Draw paddles
+        pygame.draw.rect(self.screen, WHITE, self.left_paddle)
+        pygame.draw.rect(self.screen, WHITE, self.right_paddle)
+        
+        # Draw ball
+        pygame.draw.ellipse(self.screen, WHITE, self.ball)
+        
+        # Draw center line
+        pygame.draw.aaline(self.screen, WHITE, (WIDTH//2, 0), (WIDTH//2, HEIGHT))
+        
+        # Draw scores
+        font = pygame.font.Font(None, 36)
+        left_text = font.render(str(self.left_score), True, WHITE)
+        right_text = font.render(str(self.right_score), True, WHITE)
+        self.screen.blit(left_text, (WIDTH//4, 20))
+        self.screen.blit(right_text, (3*WIDTH//4, 20))
+        
+        # Draw connection status
+        if not self.connected:
+            status_font = pygame.font.Font(None, 24)
+            status_text = status_font.render("Disconnected from server", True, (255, 0, 0))
+            self.screen.blit(status_text, (WIDTH//2 - 100, HEIGHT - 30))
+
+    pygame.display.flip()
+    klok.tick(60)
+    def run(self):
+        """Main game loop"""
+        running = True
+        while running:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+            
+            # Game logic
+            self.move_paddle()
+            self.send_data()
+            
+            # Draw
+            self.draw()
+            pygame.display.flip()
+            self.clock.tick(FPS)
+        
+        if self.connected:
+            self.socket.close()
+        pygame.quit()
+
+# Afsluiten
+pygame.quit()
+client.close()
 if __name__ == "__main__":
-    main()
+    game = PongClient()
+    game.run()
