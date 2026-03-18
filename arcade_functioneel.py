@@ -186,29 +186,6 @@ SPACE_INVADERS_INPUT_CONFIG = {
     "axis_deadzone": 0.2
 }
 
-# Multiplayer Pong input config (gebruikt dezelfde knoppen als menu)
-MP_PONG_INPUT_CONFIG = {
-    "player1": {
-        "buttons": {
-            0: 1,   # Knop 0 = omlaag
-            2: -1,  # Knop 2 = omhoog
-        },
-        "axis": {
-            "AXIS1": True,  # Linker joystick verticaal
-        }
-    },
-    "player2": {
-        "buttons": {
-            0: 1,   # Knop 0 = omlaag
-            2: -1,  # Knop 2 = omhoog
-        },
-        "axis": {
-            "AXIS1": True,  # Linker joystick verticaal
-        }
-    },
-    "axis_deadzone": 0.2
-}
-
 # ========== INPUT HANDLING SYSTEM ==========
 class InputHandler:
     def __init__(self, config):
@@ -353,36 +330,6 @@ class InputHandler:
         
         return move
     
-    def get_mp_pong_input(self, player):
-        """Speciale input handler voor multiplayer pong met arcade knoppen"""
-        if player >= len(joysticks):
-            return 0
-        
-        j = joysticks[player]
-        
-        # Gebruik dezelfde config als PONG
-        if player == 0:
-            config = MP_PONG_INPUT_CONFIG["player1"]
-        else:
-            config = MP_PONG_INPUT_CONFIG["player2"]
-        
-        # Joystick input
-        axis1 = self.deadzone(j.get_axis(1))
-        move = 0
-        
-        if abs(axis1) > MP_PONG_INPUT_CONFIG["axis_deadzone"]:
-            if axis1 > 0:
-                move = -1  # Omlaag
-            else:
-                move = 1   # Omhoog
-        
-        # Knop input (0 = omlaag, 2 = omhoug)
-        for btn, value in config["buttons"].items():
-            if btn < j.get_numbuttons() and j.get_button(btn):
-                move = value
-        
-        return move
-    
     def get_space_invaders_input(self, player):
         if player >= len(joysticks):
             return "none", False, False, False
@@ -418,7 +365,6 @@ menu_input = InputHandler(MENU_INPUT_CONFIG)
 snake_input = InputHandler(SNAKE_INPUT_CONFIG)
 pong_input = InputHandler(PONG_INPUT_CONFIG)
 space_invaders_input = InputHandler(SPACE_INVADERS_INPUT_CONFIG)
-mp_pong_input = InputHandler(MP_PONG_INPUT_CONFIG)  # Speciale handler voor MP Pong
 
 # ---------- DRAW FUNCTIONS ----------
 def draw_text(text, font, pos, color):
@@ -1435,14 +1381,61 @@ def init_space_invaders_game(difficulty=5):
         'difficulty': difficulty
     }
 
-# ========== MULTIPLAYER PONG - MET ARCADE CONTROLLERS ==========
+# ========== MULTIPLAYER PONG - SUPERSIMPEL ==========
 class MultiplayerPong:
-    def __init__(self, win_score=5, is_host=True):
+    def __init__(self, win_score=5):
+        self.screen = pygame.display.set_mode((W, H), pygame.FULLSCREEN)
+        self.clock = pygame.time.Clock()
+        self.win_score = win_score
+        self.is_host = self._check_if_host()
+        
+        if self.is_host:
+            print("Ik ben HOST - wacht op speler 2...")
+            self.game = MultiplayerPongHost(win_score)
+        else:
+            print("Ik ben CLIENT - zoek naar host...")
+            self.game = MultiplayerPongClient()
+    
+    def _check_if_host(self):
+        """Kijk of er al een host is, zo niet word je zelf host"""
+        try:
+            # Vind eigen IP
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            mijn_ip = s.getsockname()[0]
+            s.close()
+            
+            # Bepaal netwerk (bijv. 192.168.1.)
+            ip_delen = mijn_ip.split('.')
+            netwerk = f"{ip_delen[0]}.{ip_delen[1]}.{ip_delen[2]}."
+            
+            # Scan snel of er al een host is
+            for i in range(1, 255):
+                if i == int(ip_delen[3]):  # Sla mezelf over
+                    continue
+                    
+                try:
+                    test = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    test.settimeout(0.05)
+                    test.connect((f"{netwerk}{i}", 5555))
+                    test.close()
+                    return False  # Host gevonden! Ik word client
+                except:
+                    continue
+        except:
+            pass
+        
+        return True  # Geen host gevonden, ik word host
+    
+    def run(self):
+        self.game.run()
+
+class MultiplayerPongHost:
+    def __init__(self, win_score=5):
         self.screen = pygame.display.set_mode((W, H), pygame.FULLSCREEN)
         self.clock = pygame.time.Clock()
         self.font = pygame.font.Font(None, 36)
         self.win_score = win_score
-        self.is_host = is_host
         
         # Court
         self.court_margin = 40
@@ -1463,9 +1456,8 @@ class MultiplayerPong:
         # Ball
         self.ball_x = self.court_x + self.court_width // 2
         self.ball_y = self.court_y + self.court_height // 2
-        self.ball_speed_x = 0
-        self.ball_speed_y = 0
-        self.reset_ball()
+        self.ball_speed_x = MP_BALL_SPEED
+        self.ball_speed_y = MP_BALL_SPEED / 2
         
         self.score1 = 0
         self.score2 = 0
@@ -1473,34 +1465,16 @@ class MultiplayerPong:
         self.winner = None
         
         # Network
-        if is_host:
-            self._setup_host()
-        else:
-            self._setup_client()
-        
-        self.running = True
-        self.connected = False
-        self.game_started = False
-        self.start_timer = None
-        
-    def _setup_host(self):
-        """Setup als host"""
         self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.server.bind(('0.0.0.0', 5555))
         self.server.listen(1)
         self.server.settimeout(0.1)
         self.client = None
-        print(f"🎮 HOST - Wacht op client op poort 5555")
-        print(f"📡 IP: {self.get_ip()}")
-        
-    def _setup_client(self):
-        """Setup als client"""
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.socket.settimeout(3)
-        
-        # 🔴 PAS DIT IP AAN NAAR HET IP VAN DE HOST 🔴
-        self.host_ip = "10.156.5.44"  # ← VERANDER DIT ALS HOST ANDER IP HEEFT
+        self.running = True
+        self.client_connected = False
+        self.game_started = False
+        self.start_timer = None
         
     def get_ip(self):
         try:
@@ -1520,83 +1494,8 @@ class MultiplayerPong:
         self.ball_speed_x = direction * math.cos(angle) * MP_BALL_SPEED
         self.ball_speed_y = math.sin(angle) * MP_BALL_SPEED
         
-    def handle_input(self):
-        """Verwerk arcade controller input"""
-        if self.is_host:
-            # Host bestuurt paddle1 met controller 0
-            if len(joysticks) > 0:
-                move = mp_pong_input.get_mp_pong_input(0)
-                if move != 0:
-                    new_y = self.paddle1.y + move * MP_PADDLE_SPEED
-                    if new_y < self.court_y:
-                        new_y = self.court_y
-                    elif new_y + PADDLE_HEIGHT > self.court_y + self.court_height:
-                        new_y = self.court_y + self.court_height - PADDLE_HEIGHT
-                    self.paddle1.y = new_y
-        else:
-            # Client bestuurt paddle2 met controller 0
-            if len(joysticks) > 0:
-                move = mp_pong_input.get_mp_pong_input(0)
-                if move != 0:
-                    new_y = self.paddle2.y + move * MP_PADDLE_SPEED
-                    if new_y < self.court_y:
-                        new_y = self.court_y
-                    elif new_y + PADDLE_HEIGHT > self.court_y + self.court_height:
-                        new_y = self.court_y + self.court_height - PADDLE_HEIGHT
-                    self.paddle2.y = new_y
-        
-    def update_game(self):
-        """Update spel logica (alleen op host)"""
-        if not self.game_started or self.game_over:
-            return
-            
-        # Update bal
-        self.ball_x += self.ball_speed_x
-        self.ball_y += self.ball_speed_y
-        
-        # Randen botsingen
-        if self.ball_y - BALL_RADIUS < self.court_y:
-            self.ball_y = self.court_y + BALL_RADIUS
-            self.ball_speed_y *= -1
-        elif self.ball_y + BALL_RADIUS > self.court_y + self.court_height:
-            self.ball_y = self.court_y + self.court_height - BALL_RADIUS
-            self.ball_speed_y *= -1
-        
-        # Score
-        if self.ball_x - BALL_RADIUS < self.court_x:
-            self.score2 += 1
-            self.reset_ball()
-            if self.score2 >= self.win_score:
-                self.game_over = True
-                self.winner = 2
-        elif self.ball_x + BALL_RADIUS > self.court_x + self.court_width:
-            self.score1 += 1
-            self.reset_ball()
-            if self.score1 >= self.win_score:
-                self.game_over = True
-                self.winner = 1
-        
-        # Paddle botsingen
-        ball_rect = pygame.Rect(self.ball_x - BALL_RADIUS, self.ball_y - BALL_RADIUS, 
-                               BALL_RADIUS*2, BALL_RADIUS*2)
-        
-        if ball_rect.colliderect(self.paddle1) and self.ball_speed_x < 0:
-            relative_y = (self.ball_y - self.paddle1.centery) / (PADDLE_HEIGHT / 2)
-            bounce_angle = relative_y * (math.pi / 4)
-            self.ball_speed_x = -self.ball_speed_x * 1.1
-            self.ball_speed_y = math.sin(bounce_angle) * abs(self.ball_speed_x)
-            self.ball_x = self.paddle1.right + BALL_RADIUS
-            
-        if ball_rect.colliderect(self.paddle2) and self.ball_speed_x > 0:
-            relative_y = (self.ball_y - self.paddle2.centery) / (PADDLE_HEIGHT / 2)
-            bounce_angle = relative_y * (math.pi / 4)
-            self.ball_speed_x = -self.ball_speed_x * 1.1
-            self.ball_speed_y = math.sin(bounce_angle) * abs(self.ball_speed_x)
-            self.ball_x = self.paddle2.left - BALL_RADIUS
-    
-    def draw(self):
-        """Teken het spel"""
-        # Achtergrond
+    def run(self):
+        # Laad background
         try:
             bg_img = pygame.image.load("background.png").convert()
             bg_img = pygame.transform.scale(bg_img, (W, H))
@@ -1604,218 +1503,351 @@ class MultiplayerPong:
             bg_img = pygame.Surface((W, H))
             bg_img.fill((10, 20, 40))
         
-        self.screen.blit(bg_img, (0,0))
-        
-        # Court
-        pygame.draw.rect(self.screen, (100,100,150), 
-                        (self.court_x-5, self.court_y-5, self.court_width+10, self.court_height+10), 5, 15)
-        pygame.draw.rect(self.screen, (50,50,100), 
-                        (self.court_x, self.court_y, self.court_width, self.court_height), 0, 10)
-        
-        # Center lijn
-        for y in range(self.court_y, self.court_y + self.court_height, 35):
-            pygame.draw.line(self.screen, WHITE, 
-                           (self.court_x + self.court_width//2, y), 
-                           (self.court_x + self.court_width//2, min(y+20, self.court_y + self.court_height)), 3)
-        
-        # Paddles
-        pygame.draw.rect(self.screen, BLUE, self.paddle1, border_radius=10)
-        pygame.draw.rect(self.screen, RED, self.paddle2, border_radius=10)
-        
-        # Ball
-        pygame.draw.circle(self.screen, YELLOW, (int(self.ball_x), int(self.ball_y)), BALL_RADIUS)
-        
-        # Score
-        s1 = title_font.render(str(self.score1), True, BLUE)
-        s2 = title_font.render(str(self.score2), True, RED)
-        self.screen.blit(s1, (W//4 - s1.get_width()//2, 50))
-        self.screen.blit(s2, (3*W//4 - s2.get_width()//2, 50))
-        
-        # Win score
-        ws = small_font.render(f"EERSTE TOT {self.win_score}", True, YELLOW)
-        self.screen.blit(ws, (W//2 - ws.get_width()//2, 120))
-        
-        # Controller indicator
-        if len(joysticks) > 0:
-            ctrl_text = small_font.render("🎮 GEBRUIK CONTROLLER (KNOP 0/2 OF JOYSTICK)", True, GREEN)
-            self.screen.blit(ctrl_text, (W//2 - ctrl_text.get_width()//2, H - 50))
-        
-        # Game over
-        if self.game_over:
-            overlay = pygame.Surface((W, H), pygame.SRCALPHA)
-            overlay.fill((0,0,0,180))
-            self.screen.blit(overlay, (0,0))
+        while self.running:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    self.running = False
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
+                        self.running = False
+                    elif event.key == pygame.K_SPACE and self.game_over:
+                        self.score1 = 0
+                        self.score2 = 0
+                        self.game_over = False
+                        self.reset_ball()
+                        self.game_started = False
+                        self.start_timer = None
             
-            win_txt = title_font.render(f"SPELER {self.winner} WINT!", True, YELLOW)
-            self.screen.blit(win_txt, (W//2 - win_txt.get_width()//2, H//2-50))
+            # Probeer client te accepteren
+            if not self.client:
+                try:
+                    self.client, addr = self.server.accept()
+                    self.client.settimeout(0.1)
+                    print(f"Client verbonden: {addr}")
+                    self.client_connected = True
+                    self.start_timer = time.time() + 3
+                except:
+                    pass
             
-            if self.is_host:
-                restart = self.font.render("DRUK SELECT OM OPNIEUW", True, WHITE)
-                self.screen.blit(restart, (W//2 - restart.get_width()//2, H//2+50))
-        
-        # Wacht status
-        if not self.connected:
-            if self.is_host:
-                txt = title_font.render("WACHTEN OP SPELER 2...", True, YELLOW)
+            # Wacht scherm
+            if not self.client_connected:
+                self.screen.blit(bg_img, (0,0))
+                txt = title_font.render("WACHTEN OP SPELER 2", True, YELLOW)
                 self.screen.blit(txt, (W//2 - txt.get_width()//2, H//2-50))
                 
                 ip_text = self.font.render(f"IP: {self.get_ip()}", True, CYAN)
                 self.screen.blit(ip_text, (W//2 - ip_text.get_width()//2, H//2+50))
                 
                 dots = "." * (int(time.time() * 2) % 4)
-                wait_text = self.font.render(f"Wachten{dots}", True, GRAY)
+                wait_text = self.font.render(f"Zoeken{dots}", True, GRAY)
                 self.screen.blit(wait_text, (W//2 - wait_text.get_width()//2, H//2+100))
-            else:
-                txt = title_font.render("VERBINDEN MET HOST...", True, YELLOW)
-                self.screen.blit(txt, (W//2 - txt.get_width()//2, H//2-50))
                 
-                ip_text = self.font.render(f"Host IP: {self.host_ip}", True, CYAN)
-                self.screen.blit(ip_text, (W//2 - ip_text.get_width()//2, H//2+50))
-        
-        # Countdown
-        elif not self.game_started and self.start_timer:
-            if time.time() < self.start_timer:
-                wacht = int(self.start_timer - time.time()) + 1
-                count = title_font.render(str(wacht), True, YELLOW)
-                self.screen.blit(count, (W//2 - count.get_width()//2, H//2))
-        
-        pygame.display.flip()
-    
-    def run_host(self):
-        """Run als host"""
-        print("🎮 HOST modus gestart")
-        
-        while self.running:
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    self.running = False
+                pygame.display.flip()
+                self.clock.tick(30)
+                continue
             
-            # Accepteer client
-            if not self.client:
-                try:
-                    self.client, addr = self.server.accept()
-                    self.client.settimeout(0.1)
-                    print(f"✅ Client verbonden: {addr}")
-                    self.connected = True
-                    self.start_timer = time.time() + 3
-                except:
-                    pass
-            
-            # Verwerk input (alleen als verbonden en gestart)
-            if self.connected:
-                self.handle_input()
-            
-            # Update game
-            if self.game_started and not self.game_over:
-                self.update_game()
-            
-            # Communiceer met client
-            if self.client:
-                try:
-                    # Ontvang paddle2 positie van client
-                    data = self.client.recv(1024)
-                    if data:
-                        self.paddle2.y = pickle.loads(data)
+            # Start countdown
+            if not self.game_started and self.start_timer:
+                if time.time() < self.start_timer:
+                    self.screen.blit(bg_img, (0,0))
+                    txt = title_font.render("SPELER 2 GEVONDEN!", True, GREEN)
+                    self.screen.blit(txt, (W//2 - txt.get_width()//2, H//2-50))
                     
-                    # Stuur game state naar client
-                    state = {
-                        'ball_x': self.ball_x,
-                        'ball_y': self.ball_y,
-                        'ball_speed_x': self.ball_speed_x,
-                        'ball_speed_y': self.ball_speed_y,
-                        'paddle1_y': self.paddle1.y,
-                        'score1': self.score1,
-                        'score2': self.score2,
-                        'game_over': self.game_over,
-                        'winner': self.winner,
-                        'court_x': self.court_x,
-                        'court_y': self.court_y,
-                        'court_w': self.court_width,
-                        'court_h': self.court_height,
-                        'game_started': self.game_started
-                    }
-                    self.client.send(pickle.dumps(state))
-                except:
-                    self.client = None
-                    self.connected = False
-                    self.game_started = False
-                    print("❌ Client verbinding verbroken")
-            
-            # Start timer
-            if self.connected and not self.game_started and self.start_timer:
-                if time.time() >= self.start_timer:
+                    wacht = int(self.start_timer - time.time()) + 1
+                    count = title_font.render(str(wacht), True, YELLOW)
+                    self.screen.blit(count, (W//2 - count.get_width()//2, H//2+50))
+                    
+                    pygame.display.flip()
+                    self.clock.tick(30)
+                    continue
+                else:
                     self.game_started = True
                     self.reset_ball()
-                    print("🎮 Spel gestart!")
+            
+            # GAME LOOP
+            if self.game_started and not self.game_over:
+                # Host input (WASD)
+                keys = pygame.key.get_pressed()
+                if keys[pygame.K_w] and self.paddle1.top > self.court_y:
+                    self.paddle1.y -= MP_PADDLE_SPEED
+                if keys[pygame.K_s] and self.paddle1.bottom < self.court_y + self.court_height:
+                    self.paddle1.y += MP_PADDLE_SPEED
+                
+                # Bal update
+                self.ball_x += self.ball_speed_x
+                self.ball_y += self.ball_speed_y
+                
+                # Randen
+                if self.ball_y - BALL_RADIUS < self.court_y or self.ball_y + BALL_RADIUS > self.court_y + self.court_height:
+                    self.ball_speed_y *= -1
+                
+                # Score
+                if self.ball_x - BALL_RADIUS < self.court_x:
+                    self.score2 += 1
+                    self.reset_ball()
+                    if self.score2 >= self.win_score:
+                        self.game_over = True
+                        self.winner = 2
+                elif self.ball_x + BALL_RADIUS > self.court_x + self.court_width:
+                    self.score1 += 1
+                    self.reset_ball()
+                    if self.score1 >= self.win_score:
+                        self.game_over = True
+                        self.winner = 1
+                
+                # Paddle botsingen
+                ball_rect = pygame.Rect(self.ball_x - BALL_RADIUS, self.ball_y - BALL_RADIUS, BALL_RADIUS*2, BALL_RADIUS*2)
+                
+                if ball_rect.colliderect(self.paddle1) and self.ball_speed_x < 0:
+                    relative_y = (self.ball_y - self.paddle1.centery) / (PADDLE_HEIGHT / 2)
+                    bounce_angle = relative_y * (math.pi / 4)
+                    self.ball_speed_x = -self.ball_speed_x * 1.1
+                    self.ball_speed_y = math.sin(bounce_angle) * abs(self.ball_speed_x)
+                    
+                if ball_rect.colliderect(self.paddle2) and self.ball_speed_x > 0:
+                    relative_y = (self.ball_y - self.paddle2.centery) / (PADDLE_HEIGHT / 2)
+                    bounce_angle = relative_y * (math.pi / 4)
+                    self.ball_speed_x = -self.ball_speed_x * 1.1
+                    self.ball_speed_y = math.sin(bounce_angle) * abs(self.ball_speed_x)
+            
+            # Ontvang client paddle
+            try:
+                data = self.client.recv(1024)
+                if data:
+                    self.paddle2.y = pickle.loads(data)
+            except:
+                pass
+            
+            # Stuur game state
+            state = {
+                'ball_x': self.ball_x,
+                'ball_y': self.ball_y,
+                'ball_speed_x': self.ball_speed_x,
+                'ball_speed_y': self.ball_speed_y,
+                'paddle1_y': self.paddle1.y,
+                'score1': self.score1,
+                'score2': self.score2,
+                'game_over': self.game_over,
+                'winner': self.winner,
+                'court_x': self.court_x,
+                'court_y': self.court_y,
+                'court_w': self.court_width,
+                'court_h': self.court_height,
+                'game_started': self.game_started
+            }
+            try:
+                self.client.send(pickle.dumps(state))
+            except:
+                self.client = None
+                self.client_connected = False
+                self.game_started = False
             
             # Teken
-            self.draw()
+            self.screen.blit(bg_img, (0,0))
+            
+            # Court
+            pygame.draw.rect(self.screen, (100,100,150), (self.court_x-5, self.court_y-5, self.court_width+10, self.court_height+10), 5, 15)
+            pygame.draw.rect(self.screen, (50,50,100), (self.court_x, self.court_y, self.court_width, self.court_height), 0, 10)
+            
+            # Center lijn
+            for y in range(self.court_y, self.court_y + self.court_height, 35):
+                pygame.draw.line(self.screen, WHITE, (self.court_x + self.court_width//2, y), 
+                               (self.court_x + self.court_width//2, min(y+20, self.court_y + self.court_height)), 3)
+            
+            # Paddles
+            pygame.draw.rect(self.screen, BLUE, self.paddle1, border_radius=10)
+            pygame.draw.rect(self.screen, RED, self.paddle2, border_radius=10)
+            
+            # Ball
+            pygame.draw.circle(self.screen, YELLOW, (int(self.ball_x), int(self.ball_y)), BALL_RADIUS)
+            
+            # Score
+            s1 = title_font.render(str(self.score1), True, BLUE)
+            s2 = title_font.render(str(self.score2), True, RED)
+            self.screen.blit(s1, (W//4 - s1.get_width()//2, 50))
+            self.screen.blit(s2, (3*W//4 - s2.get_width()//2, 50))
+            
+            # Win score
+            ws = small_font.render(f"EERSTE TOT {self.win_score}", True, YELLOW)
+            self.screen.blit(ws, (W//2 - ws.get_width()//2, 120))
+            
+            # Game over
+            if self.game_over:
+                overlay = pygame.Surface((W, H), pygame.SRCALPHA)
+                overlay.fill((0,0,0,180))
+                self.screen.blit(overlay, (0,0))
+                
+                win_txt = title_font.render(f"SPELER {self.winner} WINT!", True, YELLOW)
+                self.screen.blit(win_txt, (W//2 - win_txt.get_width()//2, H//2-50))
+                
+                restart = self.font.render("DRUK SPATIE OM OPNIEUW", True, WHITE)
+                self.screen.blit(restart, (W//2 - restart.get_width()//2, H//2+50))
+            
+            pygame.display.flip()
             self.clock.tick(60)
         
         if self.client:
             self.client.close()
         self.server.close()
-    
-    def run_client(self):
-        """Run als client"""
-        print(f"🎮 CLIENT modus - Verbinden met {self.host_ip}:5555")
+
+class MultiplayerPongClient:
+    def __init__(self):
+        self.screen = pygame.display.set_mode((W, H), pygame.FULLSCREEN)
+        self.clock = pygame.time.Clock()
+        self.font = pygame.font.Font(None, 36)
         
-        # Probeer te verbinden
+        # Game objects
+        self.paddle2 = pygame.Rect(0, 0, PADDLE_WIDTH, PADDLE_HEIGHT)
+        self.ball_x = W//2
+        self.ball_y = H//2
+        self.score1 = 0
+        self.score2 = 0
+        self.game_over = False
+        self.winner = None
+        self.court_x = 40
+        self.court_y = 40
+        self.court_w = W - 80
+        self.court_h = H - 80
+        self.paddle1_y = H//2 - 60
+        self.game_started = False
+        
+        # Find host
+        self.socket = None
+        self._find_host()
+        self.running = True
+        
+    def _find_host(self):
+        """Zoek automatisch de host op het netwerk"""
         try:
-            self.socket.connect((self.host_ip, 5555))
-            print("✅ Verbonden met host!")
-            self.connected = True
+            # Vind eigen IP
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            mijn_ip = s.getsockname()[0]
+            s.close()
+            
+            ip_delen = mijn_ip.split('.')
+            netwerk = f"{ip_delen[0]}.{ip_delen[1]}.{ip_delen[2]}."
+            mijn_laatste = int(ip_delen[3])
+            
+            print(f"Mijn IP: {mijn_ip}")
+            print(f"Zoeken in {netwerk}1-254...")
+            
+            # Scan het netwerk
+            for i in range(1, 255):
+                if i == mijn_laatste:
+                    continue
+                    
+                ip = f"{netwerk}{i}"
+                try:
+                    self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    self.socket.settimeout(0.1)
+                    self.socket.connect((ip, 5555))
+                    print(f"Host gevonden op {ip}!")
+                    return
+                except:
+                    continue
         except Exception as e:
-            print(f"❌ Kan niet verbinden: {e}")
-            time.sleep(3)
+            print(f"Fout bij zoeken: {e}")
+        
+        print("Geen host gevonden!")
+        
+    def run(self):
+        if not self.socket:
             return
+        
+        try:
+            bg_img = pygame.image.load("background.png").convert()
+            bg_img = pygame.transform.scale(bg_img, (W, H))
+        except:
+            bg_img = pygame.Surface((W, H))
+            bg_img.fill((10, 20, 40))
         
         while self.running:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     self.running = False
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
+                        self.running = False
             
-            # Verwerk input
-            if self.connected:
-                self.handle_input()
+            # Client input (pijltjes)
+            keys = pygame.key.get_pressed()
+            if keys[pygame.K_UP] and self.paddle2.top > self.court_y:
+                self.paddle2.y -= MP_PADDLE_SPEED
+            if keys[pygame.K_DOWN] and self.paddle2.bottom < self.court_y + self.court_h:
+                self.paddle2.y += MP_PADDLE_SPEED
             
             # Stuur paddle positie
-            if self.connected:
-                try:
-                    self.socket.send(pickle.dumps(self.paddle2.y))
-                    
-                    # Ontvang game state
-                    data = self.socket.recv(4096)
-                    if data:
-                        state = pickle.loads(data)
-                        self.ball_x = state['ball_x']
-                        self.ball_y = state['ball_y']
-                        self.score1 = state['score1']
-                        self.score2 = state['score2']
-                        self.game_over = state['game_over']
-                        self.winner = state['winner']
-                        self.court_x = state['court_x']
-                        self.court_y = state['court_y']
-                        self.court_width = state['court_w']
-                        self.court_height = state['court_h']
-                        self.game_started = state['game_started']
-                        self.paddle1.y = state['paddle1_y']
-                except:
-                    print("❌ Verbinding verbroken")
-                    self.connected = False
-                    self.running = False
+            try:
+                self.socket.send(pickle.dumps(self.paddle2.y))
+            except:
+                self.running = False
+            
+            # Ontvang game state
+            try:
+                data = self.socket.recv(4096)
+                if data:
+                    state = pickle.loads(data)
+                    self.ball_x = state['ball_x']
+                    self.ball_y = state['ball_y']
+                    self.score1 = state['score1']
+                    self.score2 = state['score2']
+                    self.game_over = state['game_over']
+                    self.winner = state['winner']
+                    self.court_x = state['court_x']
+                    self.court_y = state['court_y']
+                    self.court_w = state['court_w']
+                    self.court_h = state['court_h']
+                    self.game_started = state['game_started']
+                    self.paddle1_y = state['paddle1_y']
+            except:
+                self.running = False
             
             # Teken
-            self.draw()
+            self.screen.blit(bg_img, (0,0))
+            
+            # Court
+            pygame.draw.rect(self.screen, (100,100,150), (self.court_x-5, self.court_y-5, self.court_w+10, self.court_h+10), 5, 15)
+            pygame.draw.rect(self.screen, (50,50,100), (self.court_x, self.court_y, self.court_w, self.court_h), 0, 10)
+            
+            # Center lijn
+            for y in range(self.court_y, self.court_y + self.court_h, 35):
+                pygame.draw.line(self.screen, WHITE, (self.court_x + self.court_w//2, y), 
+                               (self.court_x + self.court_w//2, min(y+20, self.court_y + self.court_h)), 3)
+            
+            # Paddles
+            paddle1 = pygame.Rect(self.court_x + 50, self.paddle1_y, PADDLE_WIDTH, PADDLE_HEIGHT)
+            pygame.draw.rect(self.screen, BLUE, paddle1, border_radius=10)
+            pygame.draw.rect(self.screen, RED, self.paddle2, border_radius=10)
+            
+            # Ball
+            pygame.draw.circle(self.screen, YELLOW, (int(self.ball_x), int(self.ball_y)), BALL_RADIUS)
+            
+            # Score
+            s1 = title_font.render(str(self.score1), True, BLUE)
+            s2 = title_font.render(str(self.score2), True, RED)
+            self.screen.blit(s1, (W//4 - s1.get_width()//2, 50))
+            self.screen.blit(s2, (3*W//4 - s2.get_width()//2, 50))
+            
+            # Wacht status
+            if not self.game_started:
+                txt = self.font.render("WACHTEN OP START...", True, YELLOW)
+                self.screen.blit(txt, (W//2 - txt.get_width()//2, H//2))
+            
+            # Game over
+            if self.game_over:
+                overlay = pygame.Surface((W, H), pygame.SRCALPHA)
+                overlay.fill((0,0,0,180))
+                self.screen.blit(overlay, (0,0))
+                
+                win_txt = title_font.render(f"SPELER {self.winner} WINT!", True, YELLOW)
+                self.screen.blit(win_txt, (W//2 - win_txt.get_width()//2, H//2-50))
+            
+            pygame.display.flip()
             self.clock.tick(60)
         
-        self.socket.close()
-    
-    def run(self):
-        if self.is_host:
-            self.run_host()
-        else:
-            self.run_client()
+        if self.socket:
+            self.socket.close()
 
 def restore_original_screen():
     global screen, W, H
@@ -1885,8 +1917,8 @@ while True:
                         pong_game_state['paused'] = not pong_game_state['paused']
                         pause_cooldown[p] = 15
                     last_pause_state[p] = pause_pressed
-    elif state == "game_mp_pong" or state == "game_mp_pong_client":
-        pass  # Wordt apart afgehandeld
+    elif state == "game_mp_pong":
+        pass
     else:
         players = range(min(2, len(joysticks)))
         direction, select_pressed, back_pressed = menu_input.get_menu_input(players)
@@ -1975,14 +2007,10 @@ while True:
     elif state == "mp_mode_select":
         current_games = mp_games
         
-        # Vraag of dit de host of client is
-        # Eerste apparaat is host, tweede is client
-        # Je kunt dit aanpassen door in de code te veranderen of het IP aan te passen
-        
         if select_pressed:
             selected_game = current_games[0]["name"]
             if selected_game == "MP PONG":
-                state = "pong_score_select"  # Ga eerst naar score selectie
+                state = "pong_score_select"
         
         if back_pressed:
             state = "menu"
@@ -1994,49 +2022,25 @@ while True:
             pong_score_limit = max(5, pong_score_limit - 1)
         
         if select_pressed:
-            # Bepaal of dit de host of client is
-            # Je kunt dit aanpassen op basis van IP of handmatig
-            # Voor nu: eerste apparaat host, tweede client
-            # Maar je kunt ook een keuze menu toevoegen
-            
-            # SIMPELE OPLOSSING: Verander deze variabele handmatig
-            # is_host = True  # Voor host
-            # is_host = False # Voor client
-            
-            # Automatisch op basis van IP (als beide inzelfde netwerk)
-            my_ip = ""
-            try:
-                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                s.connect(("8.8.8.8", 80))
-                my_ip = s.getsockname()[0]
-                s.close()
-            except:
-                my_ip = "unknown"
-            
-            print(f"Mijn IP: {my_ip}")
-            
-            # 🔴 PAS DIT AAN: Kies welke machine host is
-            # Als dit IP de host is, zet is_host = True, anders False
-            if my_ip == "10.156.5.44":  # ← VERANDER DIT NAAR IP VAN HOST
-                is_host = True
-                print("🎮 Deze machine is HOST")
-            else:
-                is_host = False
-                print("🎮 Deze machine is CLIENT")
-            
-            # Start multiplayer spel
             state = "game_mp_pong"
-            mp_pong_game = MultiplayerPong(pong_score_limit, is_host)
+            mp_pong_game = MultiplayerPong(pong_score_limit)
         
         if back_pressed:
             state = "mp_mode_select"
-    
-    elif state == "game_mp_pong":
-        if mp_pong_game is not None:
-            mp_pong_game.run()
-            restore_original_screen()
-            state = "menu"
-            mp_pong_game = None
+
+    elif state == "space_invaders_difficulty_select":
+        if dx == 1:
+            space_invaders_difficulty = min(10, space_invaders_difficulty + 1)
+        elif dx == -1:
+            space_invaders_difficulty = max(1, space_invaders_difficulty - 1)
+        
+        if select_pressed:
+            state = "game_space_invaders"
+            space_invaders_game_state = init_space_invaders_game(space_invaders_difficulty)
+            screen = space_invaders_game_state['game_screen']
+        
+        if back_pressed:
+            state = "game_select"
 
     # ---------- DRAW ----------
     if state == "menu":
@@ -2170,7 +2174,7 @@ while True:
                 (rect.centerx, indicator_y + 15)
             ])
             
-            inst_text = small_font.render("START OP BEIDE APPARATEN", True, GOLD)
+            inst_text = small_font.render("START OP BEIDE APPARATEN - HOST WORDT AUTOMATISCH Gekozen", True, GOLD)
             screen.blit(inst_text, (W//2 - inst_text.get_width()//2, rect.bottom + 40))
 
     elif state == "pong_score_select":
@@ -2180,7 +2184,7 @@ while True:
         
         instructions = [
             "STEL HET WINNENDE SCORE LIMIET IN",
-            "START OP BEIDE APPARATEN"
+            "START OP BEIDE APPARATEN - HOST WORDT AUTOMATISCH Gekozen"
         ]
         for i, line in enumerate(instructions):
             inst_text = btn_font.render(line, True, CYAN if i == 0 else WHITE)
