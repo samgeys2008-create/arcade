@@ -16,9 +16,8 @@ for i in range(pygame.joystick.get_count()):
     print(f"Joystick {i}: {js.get_name()}")
 
 # ---- Screen ----
-original_screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
-W, H = original_screen.get_size()
-screen = original_screen
+screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+W, H = screen.get_size()
 clock = pygame.time.Clock()
 
 # ---- Colors ----
@@ -105,6 +104,7 @@ for i in range(num_texts):
 
 # ---------- PONG SCORE SELECTION ----------
 pong_score_limit = 5
+mp_pong_score_limit = 5
 
 # ---------- SPACE INVADERS DIFFICULTY ----------
 space_invaders_difficulty = 5
@@ -639,8 +639,6 @@ def init_snake_game():
     grid_x = (W - grid_width) // 2
     grid_y = (H - grid_height) // 2
     
-    game_screen = pygame.display.set_mode((W, H), pygame.FULLSCREEN)
-    
     grid_pattern = create_grid_pattern(grid_width, grid_height, cell, GRID_COLOR_1, GRID_COLOR_2)
     
     class Snake:
@@ -773,15 +771,12 @@ def init_snake_game():
         'speed_slider_rect': speed_slider_rect,
         'Snake': Snake,
         'Apple': Apple,
-        'new_game': new_game,
-        'game_screen': game_screen
+        'new_game': new_game
     }
 
 # ---------- PONG GAME FUNCTIONS ----------
 def init_pong_game(win_score=5):
     global screen, W, H
-    
-    game_screen = pygame.display.set_mode((W, H), pygame.FULLSCREEN)
     
     court_margin = 40
     court_width = W - court_margin * 2
@@ -928,7 +923,6 @@ def init_pong_game(win_score=5):
         'court_height': court_height,
         'court_center_x': court_center_x,
         'court_center_y': court_center_y,
-        'game_screen': game_screen,
         'win_score': win_score,
         'death_panel': death_panel,
         'restart_btn': restart_btn,
@@ -944,8 +938,6 @@ def init_pong_game(win_score=5):
 # ---------- SPACE INVADERS GAME FUNCTIONS ----------
 def init_space_invaders_game(difficulty=5):
     global screen, W, H
-    
-    game_screen = pygame.display.set_mode((W, H), pygame.FULLSCREEN)
     
     class SpaceInvadersPlayer:
         def __init__(self):
@@ -1377,15 +1369,12 @@ def init_space_invaders_game(difficulty=5):
     
     return {
         'game': SpaceInvadersGame(difficulty),
-        'game_screen': game_screen,
         'difficulty': difficulty
     }
 
-# ========== MULTIPLAYER PONG - SUPERSIMPEL ==========
+# ========== MULTIPLAYER PONG ==========
 class MultiplayerPong:
     def __init__(self, win_score=5):
-        self.screen = pygame.display.set_mode((W, H), pygame.FULLSCREEN)
-        self.clock = pygame.time.Clock()
         self.win_score = win_score
         self.is_host = self._check_if_host()
         
@@ -1399,19 +1388,16 @@ class MultiplayerPong:
     def _check_if_host(self):
         """Kijk of er al een host is, zo niet word je zelf host"""
         try:
-            # Vind eigen IP
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.connect(("8.8.8.8", 80))
             mijn_ip = s.getsockname()[0]
             s.close()
             
-            # Bepaal netwerk (bijv. 192.168.1.)
             ip_delen = mijn_ip.split('.')
             netwerk = f"{ip_delen[0]}.{ip_delen[1]}.{ip_delen[2]}."
             
-            # Scan snel of er al een host is
             for i in range(1, 255):
-                if i == int(ip_delen[3]):  # Sla mezelf over
+                if i == int(ip_delen[3]):
                     continue
                     
                 try:
@@ -1419,32 +1405,33 @@ class MultiplayerPong:
                     test.settimeout(0.05)
                     test.connect((f"{netwerk}{i}", 5555))
                     test.close()
-                    return False  # Host gevonden! Ik word client
+                    return False
                 except:
                     continue
         except:
             pass
         
-        return True  # Geen host gevonden, ik word host
+        return True
     
     def run(self):
-        self.game.run()
+        global state, game_selected
+        result = self.game.run()
+        if result == "exit":
+            state = "menu"
+            game_selected = 0
+            return "exit"
+        return "continue"
 
 class MultiplayerPongHost:
     def __init__(self, win_score=5):
-        self.screen = pygame.display.set_mode((W, H), pygame.FULLSCREEN)
-        self.clock = pygame.time.Clock()
-        self.font = pygame.font.Font(None, 36)
         self.win_score = win_score
         
-        # Court
         self.court_margin = 40
         self.court_width = W - self.court_margin * 2
         self.court_height = H - self.court_margin * 2
         self.court_x = self.court_margin
         self.court_y = self.court_margin
         
-        # Paddles
         paddle_gap = 50
         paddle1_x = self.court_x + paddle_gap
         paddle2_x = self.court_x + self.court_width - paddle_gap - PADDLE_WIDTH
@@ -1453,7 +1440,6 @@ class MultiplayerPongHost:
         self.paddle1 = pygame.Rect(paddle1_x, paddle_y, PADDLE_WIDTH, PADDLE_HEIGHT)
         self.paddle2 = pygame.Rect(paddle2_x, paddle_y, PADDLE_WIDTH, PADDLE_HEIGHT)
         
-        # Ball
         self.ball_x = self.court_x + self.court_width // 2
         self.ball_y = self.court_y + self.court_height // 2
         self.ball_speed_x = MP_BALL_SPEED
@@ -1464,7 +1450,6 @@ class MultiplayerPongHost:
         self.game_over = False
         self.winner = None
         
-        # Network
         self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.server.bind(('0.0.0.0', 5555))
@@ -1495,7 +1480,8 @@ class MultiplayerPongHost:
         self.ball_speed_y = math.sin(angle) * MP_BALL_SPEED
         
     def run(self):
-        # Laad background
+        global screen, W, H
+        
         try:
             bg_img = pygame.image.load("background.png").convert()
             bg_img = pygame.transform.scale(bg_img, (W, H))
@@ -1503,13 +1489,17 @@ class MultiplayerPongHost:
             bg_img = pygame.Surface((W, H))
             bg_img.fill((10, 20, 40))
         
+        clock = pygame.time.Clock()
+        
         while self.running:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     self.running = False
+                    return "exit"
                 elif event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_ESCAPE:
                         self.running = False
+                        return "exit"
                     elif event.key == pygame.K_SPACE and self.game_over:
                         self.score1 = 0
                         self.score2 = 0
@@ -1518,7 +1508,6 @@ class MultiplayerPongHost:
                         self.game_started = False
                         self.start_timer = None
             
-            # Probeer client te accepteren
             if not self.client:
                 try:
                     self.client, addr = self.server.accept()
@@ -1529,59 +1518,52 @@ class MultiplayerPongHost:
                 except:
                     pass
             
-            # Wacht scherm
             if not self.client_connected:
-                self.screen.blit(bg_img, (0,0))
+                screen.blit(bg_img, (0,0))
                 txt = title_font.render("WACHTEN OP SPELER 2", True, YELLOW)
-                self.screen.blit(txt, (W//2 - txt.get_width()//2, H//2-50))
+                screen.blit(txt, (W//2 - txt.get_width()//2, H//2-50))
                 
-                ip_text = self.font.render(f"IP: {self.get_ip()}", True, CYAN)
-                self.screen.blit(ip_text, (W//2 - ip_text.get_width()//2, H//2+50))
+                ip_text = pygame.font.Font(None, 36).render(f"IP: {self.get_ip()}", True, CYAN)
+                screen.blit(ip_text, (W//2 - ip_text.get_width()//2, H//2+50))
                 
                 dots = "." * (int(time.time() * 2) % 4)
-                wait_text = self.font.render(f"Zoeken{dots}", True, GRAY)
-                self.screen.blit(wait_text, (W//2 - wait_text.get_width()//2, H//2+100))
+                wait_text = pygame.font.Font(None, 36).render(f"Zoeken{dots}", True, GRAY)
+                screen.blit(wait_text, (W//2 - wait_text.get_width()//2, H//2+100))
                 
                 pygame.display.flip()
-                self.clock.tick(30)
+                clock.tick(30)
                 continue
             
-            # Start countdown
             if not self.game_started and self.start_timer:
                 if time.time() < self.start_timer:
-                    self.screen.blit(bg_img, (0,0))
+                    screen.blit(bg_img, (0,0))
                     txt = title_font.render("SPELER 2 GEVONDEN!", True, GREEN)
-                    self.screen.blit(txt, (W//2 - txt.get_width()//2, H//2-50))
+                    screen.blit(txt, (W//2 - txt.get_width()//2, H//2-50))
                     
                     wacht = int(self.start_timer - time.time()) + 1
                     count = title_font.render(str(wacht), True, YELLOW)
-                    self.screen.blit(count, (W//2 - count.get_width()//2, H//2+50))
+                    screen.blit(count, (W//2 - count.get_width()//2, H//2+50))
                     
                     pygame.display.flip()
-                    self.clock.tick(30)
+                    clock.tick(30)
                     continue
                 else:
                     self.game_started = True
                     self.reset_ball()
             
-            # GAME LOOP
             if self.game_started and not self.game_over:
-                # Host input (WASD)
                 keys = pygame.key.get_pressed()
                 if keys[pygame.K_w] and self.paddle1.top > self.court_y:
                     self.paddle1.y -= MP_PADDLE_SPEED
                 if keys[pygame.K_s] and self.paddle1.bottom < self.court_y + self.court_height:
                     self.paddle1.y += MP_PADDLE_SPEED
                 
-                # Bal update
                 self.ball_x += self.ball_speed_x
                 self.ball_y += self.ball_speed_y
                 
-                # Randen
                 if self.ball_y - BALL_RADIUS < self.court_y or self.ball_y + BALL_RADIUS > self.court_y + self.court_height:
                     self.ball_speed_y *= -1
                 
-                # Score
                 if self.ball_x - BALL_RADIUS < self.court_x:
                     self.score2 += 1
                     self.reset_ball()
@@ -1595,7 +1577,6 @@ class MultiplayerPongHost:
                         self.game_over = True
                         self.winner = 1
                 
-                # Paddle botsingen
                 ball_rect = pygame.Rect(self.ball_x - BALL_RADIUS, self.ball_y - BALL_RADIUS, BALL_RADIUS*2, BALL_RADIUS*2)
                 
                 if ball_rect.colliderect(self.paddle1) and self.ball_speed_x < 0:
@@ -1610,7 +1591,6 @@ class MultiplayerPongHost:
                     self.ball_speed_x = -self.ball_speed_x * 1.1
                     self.ball_speed_y = math.sin(bounce_angle) * abs(self.ball_speed_x)
             
-            # Ontvang client paddle
             try:
                 data = self.client.recv(1024)
                 if data:
@@ -1618,7 +1598,6 @@ class MultiplayerPongHost:
             except:
                 pass
             
-            # Stuur game state
             state = {
                 'ball_x': self.ball_x,
                 'ball_y': self.ball_y,
@@ -1642,61 +1621,48 @@ class MultiplayerPongHost:
                 self.client_connected = False
                 self.game_started = False
             
-            # Teken
-            self.screen.blit(bg_img, (0,0))
+            screen.blit(bg_img, (0,0))
             
-            # Court
-            pygame.draw.rect(self.screen, (100,100,150), (self.court_x-5, self.court_y-5, self.court_width+10, self.court_height+10), 5, 15)
-            pygame.draw.rect(self.screen, (50,50,100), (self.court_x, self.court_y, self.court_width, self.court_height), 0, 10)
+            pygame.draw.rect(screen, (100,100,150), (self.court_x-5, self.court_y-5, self.court_width+10, self.court_height+10), 5, 15)
+            pygame.draw.rect(screen, (50,50,100), (self.court_x, self.court_y, self.court_width, self.court_height), 0, 10)
             
-            # Center lijn
             for y in range(self.court_y, self.court_y + self.court_height, 35):
-                pygame.draw.line(self.screen, WHITE, (self.court_x + self.court_width//2, y), 
+                pygame.draw.line(screen, WHITE, (self.court_x + self.court_width//2, y), 
                                (self.court_x + self.court_width//2, min(y+20, self.court_y + self.court_height)), 3)
             
-            # Paddles
-            pygame.draw.rect(self.screen, BLUE, self.paddle1, border_radius=10)
-            pygame.draw.rect(self.screen, RED, self.paddle2, border_radius=10)
+            pygame.draw.rect(screen, BLUE, self.paddle1, border_radius=10)
+            pygame.draw.rect(screen, RED, self.paddle2, border_radius=10)
+            pygame.draw.circle(screen, YELLOW, (int(self.ball_x), int(self.ball_y)), BALL_RADIUS)
             
-            # Ball
-            pygame.draw.circle(self.screen, YELLOW, (int(self.ball_x), int(self.ball_y)), BALL_RADIUS)
-            
-            # Score
             s1 = title_font.render(str(self.score1), True, BLUE)
             s2 = title_font.render(str(self.score2), True, RED)
-            self.screen.blit(s1, (W//4 - s1.get_width()//2, 50))
-            self.screen.blit(s2, (3*W//4 - s2.get_width()//2, 50))
+            screen.blit(s1, (W//4 - s1.get_width()//2, 50))
+            screen.blit(s2, (3*W//4 - s2.get_width()//2, 50))
             
-            # Win score
             ws = small_font.render(f"EERSTE TOT {self.win_score}", True, YELLOW)
-            self.screen.blit(ws, (W//2 - ws.get_width()//2, 120))
+            screen.blit(ws, (W//2 - ws.get_width()//2, 120))
             
-            # Game over
             if self.game_over:
                 overlay = pygame.Surface((W, H), pygame.SRCALPHA)
                 overlay.fill((0,0,0,180))
-                self.screen.blit(overlay, (0,0))
+                screen.blit(overlay, (0,0))
                 
                 win_txt = title_font.render(f"SPELER {self.winner} WINT!", True, YELLOW)
-                self.screen.blit(win_txt, (W//2 - win_txt.get_width()//2, H//2-50))
+                screen.blit(win_txt, (W//2 - win_txt.get_width()//2, H//2-50))
                 
-                restart = self.font.render("DRUK SPATIE OM OPNIEUW", True, WHITE)
-                self.screen.blit(restart, (W//2 - restart.get_width()//2, H//2+50))
+                restart = pygame.font.Font(None, 36).render("DRUK SPATIE OM OPNIEUW", True, WHITE)
+                screen.blit(restart, (W//2 - restart.get_width()//2, H//2+50))
             
             pygame.display.flip()
-            self.clock.tick(60)
+            clock.tick(60)
         
         if self.client:
             self.client.close()
         self.server.close()
+        return "exit"
 
 class MultiplayerPongClient:
     def __init__(self):
-        self.screen = pygame.display.set_mode((W, H), pygame.FULLSCREEN)
-        self.clock = pygame.time.Clock()
-        self.font = pygame.font.Font(None, 36)
-        
-        # Game objects
         self.paddle2 = pygame.Rect(0, 0, PADDLE_WIDTH, PADDLE_HEIGHT)
         self.ball_x = W//2
         self.ball_y = H//2
@@ -1711,15 +1677,12 @@ class MultiplayerPongClient:
         self.paddle1_y = H//2 - 60
         self.game_started = False
         
-        # Find host
         self.socket = None
         self._find_host()
         self.running = True
         
     def _find_host(self):
-        """Zoek automatisch de host op het netwerk"""
         try:
-            # Vind eigen IP
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.connect(("8.8.8.8", 80))
             mijn_ip = s.getsockname()[0]
@@ -1732,7 +1695,6 @@ class MultiplayerPongClient:
             print(f"Mijn IP: {mijn_ip}")
             print(f"Zoeken in {netwerk}1-254...")
             
-            # Scan het netwerk
             for i in range(1, 255):
                 if i == mijn_laatste:
                     continue
@@ -1752,8 +1714,10 @@ class MultiplayerPongClient:
         print("Geen host gevonden!")
         
     def run(self):
+        global screen, W, H
+        
         if not self.socket:
-            return
+            return "exit"
         
         try:
             bg_img = pygame.image.load("background.png").convert()
@@ -1762,28 +1726,29 @@ class MultiplayerPongClient:
             bg_img = pygame.Surface((W, H))
             bg_img.fill((10, 20, 40))
         
+        clock = pygame.time.Clock()
+        
         while self.running:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     self.running = False
+                    return "exit"
                 elif event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_ESCAPE:
                         self.running = False
+                        return "exit"
             
-            # Client input (pijltjes)
             keys = pygame.key.get_pressed()
             if keys[pygame.K_UP] and self.paddle2.top > self.court_y:
                 self.paddle2.y -= MP_PADDLE_SPEED
             if keys[pygame.K_DOWN] and self.paddle2.bottom < self.court_y + self.court_h:
                 self.paddle2.y += MP_PADDLE_SPEED
             
-            # Stuur paddle positie
             try:
                 self.socket.send(pickle.dumps(self.paddle2.y))
             except:
                 self.running = False
             
-            # Ontvang game state
             try:
                 data = self.socket.recv(4096)
                 if data:
@@ -1803,56 +1768,47 @@ class MultiplayerPongClient:
             except:
                 self.running = False
             
-            # Teken
-            self.screen.blit(bg_img, (0,0))
+            screen.blit(bg_img, (0,0))
             
-            # Court
-            pygame.draw.rect(self.screen, (100,100,150), (self.court_x-5, self.court_y-5, self.court_w+10, self.court_h+10), 5, 15)
-            pygame.draw.rect(self.screen, (50,50,100), (self.court_x, self.court_y, self.court_w, self.court_h), 0, 10)
+            pygame.draw.rect(screen, (100,100,150), (self.court_x-5, self.court_y-5, self.court_w+10, self.court_h+10), 5, 15)
+            pygame.draw.rect(screen, (50,50,100), (self.court_x, self.court_y, self.court_w, self.court_h), 0, 10)
             
-            # Center lijn
             for y in range(self.court_y, self.court_y + self.court_h, 35):
-                pygame.draw.line(self.screen, WHITE, (self.court_x + self.court_w//2, y), 
+                pygame.draw.line(screen, WHITE, (self.court_x + self.court_w//2, y), 
                                (self.court_x + self.court_w//2, min(y+20, self.court_y + self.court_h)), 3)
             
-            # Paddles
             paddle1 = pygame.Rect(self.court_x + 50, self.paddle1_y, PADDLE_WIDTH, PADDLE_HEIGHT)
-            pygame.draw.rect(self.screen, BLUE, paddle1, border_radius=10)
-            pygame.draw.rect(self.screen, RED, self.paddle2, border_radius=10)
+            pygame.draw.rect(screen, BLUE, paddle1, border_radius=10)
+            pygame.draw.rect(screen, RED, self.paddle2, border_radius=10)
+            pygame.draw.circle(screen, YELLOW, (int(self.ball_x), int(self.ball_y)), BALL_RADIUS)
             
-            # Ball
-            pygame.draw.circle(self.screen, YELLOW, (int(self.ball_x), int(self.ball_y)), BALL_RADIUS)
-            
-            # Score
             s1 = title_font.render(str(self.score1), True, BLUE)
             s2 = title_font.render(str(self.score2), True, RED)
-            self.screen.blit(s1, (W//4 - s1.get_width()//2, 50))
-            self.screen.blit(s2, (3*W//4 - s2.get_width()//2, 50))
+            screen.blit(s1, (W//4 - s1.get_width()//2, 50))
+            screen.blit(s2, (3*W//4 - s2.get_width()//2, 50))
             
-            # Wacht status
             if not self.game_started:
-                txt = self.font.render("WACHTEN OP START...", True, YELLOW)
-                self.screen.blit(txt, (W//2 - txt.get_width()//2, H//2))
+                txt = pygame.font.Font(None, 36).render("WACHTEN OP START...", True, YELLOW)
+                screen.blit(txt, (W//2 - txt.get_width()//2, H//2))
             
-            # Game over
             if self.game_over:
                 overlay = pygame.Surface((W, H), pygame.SRCALPHA)
                 overlay.fill((0,0,0,180))
-                self.screen.blit(overlay, (0,0))
+                screen.blit(overlay, (0,0))
                 
                 win_txt = title_font.render(f"SPELER {self.winner} WINT!", True, YELLOW)
-                self.screen.blit(win_txt, (W//2 - win_txt.get_width()//2, H//2-50))
+                screen.blit(win_txt, (W//2 - win_txt.get_width()//2, H//2-50))
             
             pygame.display.flip()
-            self.clock.tick(60)
+            clock.tick(60)
         
         if self.socket:
             self.socket.close()
+        return "exit"
 
 def restore_original_screen():
     global screen, W, H
-    screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
-    W, H = screen.get_size()
+    pygame.display.set_mode((W, H), pygame.FULLSCREEN)
 
 # ---------- MAIN LOOP ----------
 snake_game_state = None
@@ -1871,7 +1827,7 @@ while True:
 
     # Input handling
     if state in ["menu", "choose", "game_select", "pong_score_select", 
-                 "space_invaders_difficulty_select", "mp_mode_select"]:
+                 "space_invaders_difficulty_select", "mp_mode_select", "pong_2p_score_select"]:
         players = range(min(2, len(joysticks)))
         direction, select_pressed, back_pressed = menu_input.get_menu_input(players)
         dx, dy = direction
@@ -1897,10 +1853,11 @@ while True:
                 if selection_made:
                     if space_invaders_game_state['game'].dead_menu_index == 0:
                         space_invaders_game_state = init_space_invaders_game(space_invaders_difficulty)
-                        screen = space_invaders_game_state['game_screen']
                     else:
                         restore_original_screen()
                         state = "game_select"
+                        game_selected = 0
+                        continue
             
             if space_invaders_game_state and pause_pressed and not last_pause_state[active_joystick] and pause_cooldown[active_joystick] <= 0:
                 space_invaders_game_state['game'].paused = not space_invaders_game_state['game'].paused
@@ -1947,10 +1904,12 @@ while True:
                 is_two_player_mode = False
             elif menu_selected == 1: 
                 state = "game_select"
+                game_selected = 0
                 active_joystick = None
                 is_two_player_mode = True
             elif menu_selected == 2: 
                 state = "mp_mode_select"
+                game_selected = 0
                 is_two_player_mode = False
 
     elif state == "choose":
@@ -1964,8 +1923,11 @@ while True:
             choose_selected = 0
         
         if select_pressed:
-            active_joystick = 1 if choose_selected == 0 else 0
+            # FIXED: Blauw (choose_selected == 0) = linker controller (index 0)
+            #        Rood (choose_selected == 1) = rechter controller (index 1)
+            active_joystick = 0 if choose_selected == 0 else 1
             state = "game_select"
+            game_selected = 0
             if is_two_player_mode:
                 active_joystick = None
         
@@ -1978,55 +1940,83 @@ while True:
         else:
             current_games = one_player_games
         
+        if game_selected >= len(current_games):
+            game_selected = 0
+        
         if dx == 1:
             game_selected = min(len(current_games)-1, game_selected + 1)
         elif dx == -1:
             game_selected = max(0, game_selected - 1)
             
         if select_pressed:
-            selected_game = current_games[game_selected]["name"]
-            
-            if active_joystick is not None:
-                if selected_game == "SNAKE":
-                    state = "game_1"
-                    snake_game_state = init_snake_game()
-                    screen = snake_game_state['game_screen']
-                elif selected_game == "SPACE INVADERS":
-                    state = "space_invaders_difficulty_select"
-                    space_invaders_difficulty = 5
-            elif selected_game == "PONG":
-                state = "pong_score_select"
-                pong_score_limit = 5
+            if 0 <= game_selected < len(current_games):
+                selected_game = current_games[game_selected]["name"]
+                
+                if active_joystick is not None:
+                    if selected_game == "SNAKE":
+                        state = "game_1"
+                        snake_game_state = init_snake_game()
+                    elif selected_game == "SPACE INVADERS":
+                        state = "space_invaders_difficulty_select"
+                        space_invaders_difficulty = 5
+                elif selected_game == "PONG":
+                    state = "pong_2p_score_select"
         
         if back_pressed:
             if is_two_player_mode:
                 state = "menu"
             else:
                 state = "choose"
+                game_selected = 0
+
+    elif state == "pong_2p_score_select":
+        if dx == 1:
+            pong_score_limit = min(20, pong_score_limit + 1)
+        elif dx == -1:
+            pong_score_limit = max(3, pong_score_limit - 1)
+        
+        if dy == 1:
+            pong_score_limit = min(20, pong_score_limit + 1)
+        elif dy == -1:
+            pong_score_limit = max(3, pong_score_limit - 1)
+        
+        if select_pressed:
+            state = "game_pong"
+            pong_game_state = init_pong_game(pong_score_limit)
+        
+        if back_pressed:
+            state = "game_select"
+            game_selected = 0
 
     elif state == "mp_mode_select":
         current_games = mp_games
         
+        if game_selected >= len(current_games):
+            game_selected = 0
+        
         if select_pressed:
-            selected_game = current_games[0]["name"]
-            if selected_game == "MP PONG":
-                state = "pong_score_select"
+            if 0 <= game_selected < len(current_games):
+                selected_game = current_games[game_selected]["name"]
+                if selected_game == "MP PONG":
+                    state = "pong_score_select"
         
         if back_pressed:
             state = "menu"
+            game_selected = 0
 
     elif state == "pong_score_select":
         if dx == 1:
-            pong_score_limit = min(20, pong_score_limit + 1)
+            mp_pong_score_limit = min(20, mp_pong_score_limit + 1)
         elif dx == -1:
-            pong_score_limit = max(5, pong_score_limit - 1)
+            mp_pong_score_limit = max(3, mp_pong_score_limit - 1)
         
         if select_pressed:
             state = "game_mp_pong"
-            mp_pong_game = MultiplayerPong(pong_score_limit)
+            mp_pong_game = MultiplayerPong(mp_pong_score_limit)
         
         if back_pressed:
             state = "mp_mode_select"
+            game_selected = 0
 
     elif state == "space_invaders_difficulty_select":
         if dx == 1:
@@ -2037,10 +2027,10 @@ while True:
         if select_pressed:
             state = "game_space_invaders"
             space_invaders_game_state = init_space_invaders_game(space_invaders_difficulty)
-            screen = space_invaders_game_state['game_screen']
         
         if back_pressed:
             state = "game_select"
+            game_selected = 0
 
     # ---------- DRAW ----------
     if state == "menu":
@@ -2074,6 +2064,10 @@ while True:
         screen.blit(star_surf,(0,0))
         
         current_games = two_player_games if is_two_player_mode else one_player_games
+        
+        if game_selected >= len(current_games):
+            game_selected = 0
+        
         mode_title = "2 PLAYER GAMES" if is_two_player_mode else "1 PLAYER GAMES"
         
         draw_3d_text("SELECT GAME", title_font, (W//2, 100))
@@ -2136,6 +2130,34 @@ while True:
                 name_text = btn_font.render(game["name"], True, (game["color"][0]//2, game["color"][1]//2, game["color"][2]//2))
                 screen.blit(name_text, (rect.centerx - name_text.get_width()//2, rect.y - 40))
 
+    elif state == "pong_2p_score_select":
+        screen.fill((20, 10, 40))
+        
+        draw_3d_text("PONG SETTINGS", title_font, (W//2, 150))
+        
+        instructions = [
+            "STEL HET WINNENDE SCORE LIMIET IN",
+            "SPELER 1 (BLUE): W/S OF JOYSTICK",
+            "SPELER 2 (RED): PIJLTOETSEN OF JOYSTICK"
+        ]
+        for i, line in enumerate(instructions):
+            if i == 0:
+                inst_text = btn_font.render(line, True, CYAN)
+            else:
+                inst_text = small_font.render(line, True, WHITE)
+            screen.blit(inst_text, (W//2 - inst_text.get_width()//2, 250 + i*40))
+        
+        slider_x = W//2 - 300
+        slider_y = H//2 + 50
+        slider_width = 600
+        draw_slider(screen, slider_x, slider_y, slider_width, pong_score_limit, 3, 20, 1)
+        
+        score_text = btn_font.render(f"EERSTE TOT {pong_score_limit} PUNTEN WINT", True, YELLOW)
+        screen.blit(score_text, (W//2 - score_text.get_width()//2, H//2 + 120))
+        
+        select_text = small_font.render("PRESS SELECT TO START", True, GREEN)
+        screen.blit(select_text, (W//2 - select_text.get_width()//2, H - 100))
+
     elif state == "mp_mode_select":
         screen.fill((10, 5, 30))
         
@@ -2174,7 +2196,7 @@ while True:
                 (rect.centerx, indicator_y + 15)
             ])
             
-            inst_text = small_font.render("START OP BEIDE APPARATEN - HOST WORDT AUTOMATISCH Gekozen", True, GOLD)
+            inst_text = small_font.render("START OP BEIDE APPARATEN - HOST WORDT AUTOMATISCH GEKOZEN", True, GOLD)
             screen.blit(inst_text, (W//2 - inst_text.get_width()//2, rect.bottom + 40))
 
     elif state == "pong_score_select":
@@ -2184,7 +2206,7 @@ while True:
         
         instructions = [
             "STEL HET WINNENDE SCORE LIMIET IN",
-            "START OP BEIDE APPARATEN - HOST WORDT AUTOMATISCH Gekozen"
+            "START OP BEIDE APPARATEN - HOST WORDT AUTOMATISCH GEKOZEN"
         ]
         for i, line in enumerate(instructions):
             inst_text = btn_font.render(line, True, CYAN if i == 0 else WHITE)
@@ -2193,9 +2215,9 @@ while True:
         slider_x = W//2 - 300
         slider_y = H//2 + 50
         slider_width = 600
-        draw_slider(screen, slider_x, slider_y, slider_width, pong_score_limit, 5, 20, 1)
+        draw_slider(screen, slider_x, slider_y, slider_width, mp_pong_score_limit, 3, 20, 1)
         
-        score_text = btn_font.render(f"EERSTE TOT {pong_score_limit} PUNTEN WINT", True, YELLOW)
+        score_text = btn_font.render(f"EERSTE TOT {mp_pong_score_limit} PUNTEN WINT", True, YELLOW)
         screen.blit(score_text, (W//2 - score_text.get_width()//2, H//2 + 120))
 
     elif state == "space_invaders_difficulty_select":
@@ -2262,18 +2284,18 @@ while True:
             last_pause_state[active_joystick] = pause_pressed
             
             if paused and not dead:
-                if dx_snake == 1:
-                    speed_multiplier = min(2.0, speed_multiplier + 0.1)
-                elif dx_snake == -1:
-                    speed_multiplier = max(0.3, speed_multiplier - 0.1)
-                
                 if active_joystick < len(joysticks):
                     j = joysticks[active_joystick]
                     axis0 = snake_input.deadzone(j.get_axis(0))
                     if axis0 > 0.5:
-                        speed_multiplier = min(2.0, speed_multiplier + 0.1)
+                        speed_multiplier = min(2.0, speed_multiplier + 0.05)
                     elif axis0 < -0.5:
-                        speed_multiplier = max(0.3, speed_multiplier - 0.1)
+                        speed_multiplier = max(0.3, speed_multiplier - 0.05)
+                
+                if dx_snake == 1:
+                    speed_multiplier = min(2.0, speed_multiplier + 0.1)
+                elif dx_snake == -1:
+                    speed_multiplier = max(0.3, speed_multiplier - 0.1)
                 
                 if select_pressed and not pause_select_pressed:
                     paused = False
@@ -2324,6 +2346,7 @@ while True:
                     else:
                         restore_original_screen()
                         state = "game_select"
+                        game_selected = 0
                         continue
                 elif not select_pressed:
                     dead_select_pressed = False
@@ -2331,6 +2354,7 @@ while True:
                 if back_pressed and not dead_select_pressed:
                     restore_original_screen()
                     state = "game_select"
+                    game_selected = 0
                     continue
 
         snake_game_state.update({
@@ -2479,12 +2503,12 @@ while True:
         
         if not game_over and not paused:
             if len(joysticks) > 0:
-                move_p2 = pong_input.get_pong_input(0)
+                move_p2 = pong_input.get_pong_input(1)
                 if move_p2 != 0:
                     paddles[1].move(move_p2, court_y, court_y + court_height)
             
             if len(joysticks) > 1:
-                move_p1 = pong_input.get_pong_input(1)
+                move_p1 = pong_input.get_pong_input(0)
                 if move_p1 != 0:
                     paddles[0].move(move_p1, court_y, court_y + court_height)
             
@@ -2526,11 +2550,11 @@ while True:
                 dead_select_pressed = True
                 if menu_index == 0:
                     pong_game_state = init_pong_game(win_score)
-                    screen = pong_game_state['game_screen']
                     continue
                 else:
                     restore_original_screen()
                     state = "game_select"
+                    game_selected = 0
                     continue
             elif not select_pressed:
                 dead_select_pressed = False
@@ -2597,17 +2621,18 @@ while True:
         screen.blit(win_score_text, (W//2 - win_score_text.get_width()//2, score_y + 90))
         
         if not paused and not game_over:
-            pause_hint = small_font.render("PRESS PAUSE (BUTTON 4) TO PAUSE", True, WHITE)
+            pause_hint = small_font.render("PRESS YELLOW TO PAUSE", True, WHITE)
             screen.blit(pause_hint, (W//2 - pause_hint.get_width()//2, H - 50))
         
         if message and not game_over and not paused:
-            msg_bg = pygame.Rect(W//2 - 300, H//2 - 50, 600, 100)
+        # Position at top middle, just below the score area
+            msg_y = 240  # Position from top of screen
+            msg_bg = pygame.Rect(W//2 - 300, msg_y - 50, 600, 100)
             pygame.draw.rect(screen, (0, 0, 0, 180), msg_bg, border_radius=20)
             pygame.draw.rect(screen, YELLOW, msg_bg, 3, border_radius=20)
-            
+    
             msg_text = btn_font.render(message, True, YELLOW)
-            screen.blit(msg_text, (W//2 - msg_text.get_width()//2, H//2 - msg_text.get_height()//2))
-        
+            screen.blit(msg_text, (W//2 - msg_text.get_width()//2, msg_y - msg_text.get_height()//2))
         if paused and not game_over:
             overlay = pygame.Surface((W, H), pygame.SRCALPHA)
             overlay.fill((0, 0, 0, 200))
@@ -2625,7 +2650,7 @@ while True:
             pause_rect = pause_text.get_rect(center=(W//2, pause_panel_y + 120))
             screen.blit(pause_text, pause_rect)
             
-            resume_text = btn_font.render("PRESS SELECT TO RESUME", True, GREEN)
+            resume_text = btn_font.render("PRESS GREEN TO RESUME", True, GREEN)
             resume_rect = resume_text.get_rect(center=(W//2, pause_panel_y + 240))
             screen.blit(resume_text, resume_rect)
         
@@ -2698,11 +2723,10 @@ while True:
                 if selection_made:
                     if game.dead_menu_index == 0:
                         space_invaders_game_state = init_space_invaders_game(space_invaders_difficulty)
-                        screen = space_invaders_game_state['game_screen']
-                        continue
                     else:
                         restore_original_screen()
                         state = "game_select"
+                        game_selected = 0
                         continue
         
         game.update()
@@ -2710,10 +2734,13 @@ while True:
 
     # ---------- GAME_MP_PONG ----------
     elif state == "game_mp_pong" and mp_pong_game is not None:
-        mp_pong_game.run()
-        restore_original_screen()
-        state = "menu"
-        mp_pong_game = None
+        result = mp_pong_game.run()
+        if result == "exit":
+            restore_original_screen()
+            state = "menu"
+            game_selected = 0
+            mp_pong_game = None
 
     pygame.display.flip()
     clock.tick(60)
+
